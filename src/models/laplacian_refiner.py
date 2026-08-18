@@ -300,16 +300,22 @@ class LaplacianRefiner(nn.Module):
     
     Architecture:
     1. Decompose high-res input into Laplacian pyramid (3 levels)
-    2. For each level (except lowest):
+    2. Refine ONLY the intermediate level (384×512) with a RefinementBlock:
        - Concatenate residual with upsampled lower-res output
        - Pass through RefinementBlock to predict mask
        - Apply mask to residual: L'_i = L_i ⊗ M_i
-    3. Recompose refined pyramid into high-res output
+    3. The high-res level (768×1024) residual is passed through unchanged
+    4. Recompose refined pyramid into high-res output
+    
+    Paper alignment (arXiv 2303.12862): "The residual refinement network
+    operates on the intermediate resolution of (384×512)." The 768×1024 output
+    is obtained by upsampling the refined 384×512 result, NOT by a separate
+    refinement at 768×1024.
     
     Flow for 768×1024 input:
     - Level 2 (Low): 192×256 (fed to frozen IOANet)
     - Level 1 (Mid): 384×512 (refine with RefinementBlock)
-    - Level 0 (High): 768×1024 (refine with RefinementBlock)
+    - Level 0 (High): 768×1024 (residual passed through unchanged)
     """
     
     def __init__(
@@ -333,9 +339,9 @@ class LaplacianRefiner(nn.Module):
         self.mask_scale = mask_scale
         self.decomposer = LaplacianDecomposer()
         
-        # Create refinement blocks for each level (except lowest)
-        # Each block takes concatenated input: (residual + upsampled_low_res)
-        # Input channels: 3 (residual) + 3 (upsampled low-res) = 6
+        # Paper alignment: the residual refinement network operates ONLY at the
+        # intermediate resolution (384×512). So we create exactly ONE refinement
+        # block (for the intermediate level), not one per level.
         self.refine_blocks = nn.ModuleList([
             RefinementBlock(
                 in_channels=6,
@@ -343,7 +349,6 @@ class LaplacianRefiner(nn.Module):
                 num_blocks=refine_blocks,
                 mask_scale=mask_scale  # Pass mask_scale to each refinement block
             )
-            for _ in range(num_levels - 1)  # Don't refine lowest level
         ])
     
     def forward(
@@ -370,49 +375,56 @@ class LaplacianRefiner(nn.Module):
         # =====================================================================
         # Step 2: Refine residuals using frozen IOANet output
         # =====================================================================
-        # Build refined_residuals in correct order [L'_0, L'_1, L'_2]
-        refined_residuals = []
+        # Paper alignment: the residual refinement network operates ONLY at the
+        # intermediate resolution (384×512). The high-res level (768×1024)
+        # residual is passed through unchanged.
+        #
+        # Pyramid levels (for 768×1024 input):
+        #   Level 2 (Low):  192×256  -> IOANet output (I'_2)
+        #   Level 1 (Mid):  384×512  -> refined with RefinementBlock (I'_1)
+        #   Level 0 (High): 768×1024 -> residual passed through unchanged (I'_0)
         
-        # Current reconstruction (start from IOANet's low-res output)
+        # Start from IOANet's low-res output (lowest level, unchanged)
         current_reconstruction = low_res_output  # I'_2 at 192×256
-        refined_residuals.append(current_reconstruction)  # L'_2 (lowest level unchanged)
         
-        # Process levels from lowest to highest (Level 1, then Level 0)
-        for level in range(self.num_levels - 2, -1, -1):
-            # Upsample previous reconstruction to match this level's spatial dimensions
-            # Nearest x2 (paper alignment) for the reconstruction/guidance path
-            upsampled_guidance = F.interpolate(
-                current_reconstruction,
-                size=residuals[level].shape[-2:],
-                mode='nearest'
-            )
-            
-            # Concatenate residual and upsampled guidance
-            # Input to refiner: (B, 6, H_i, W_i)
-            concat_input = torch.cat(
-                [residuals[level], upsampled_guidance],
-                dim=1
-            )
-            
-            # Predict mask for this level using RefinementBlock
-            # mask is in [0, 1] (sigmoid output)
-            mask = self.refine_blocks[level](concat_input)  # (B, 1, H_i, W_i)
-            
-            # Apply mask to residual (element-wise multiplication)
-            # Mask acts as gain control, suppressing shadow artifacts
-            refined_residual = residuals[level] * mask
-            
-            # Insert at front to maintain [L'_0, L'_1, L'_2] order
-            refined_residuals.insert(0, refined_residual)
-            
-            # Update reconstruction for next level
-            current_reconstruction = upsampled_guidance + refined_residual
+        # Refine the intermediate level (Level 1, 384×512)
+        mid_level = self.num_levels - 2  # index of the intermediate level
+        
+        # Upsample previous reconstruction to match the intermediate level
+        upsampled_guidance = F.interpolate(
+            current_reconstruction,
+            size=residuals[mid_level].shape[-2:],
+            mode='nearest'
+        )
+        
+        # Concatenate residual and upsampled guidance
+        # Input to refiner: (B, 6, H_i, W_i)
+        concat_input = torch.cat(
+            [residuals[mid_level], upsampled_guidance],
+            dim=1
+        )
+        
+        # Predict mask for the intermediate level using RefinementBlock
+        # mask is in [0, 1] (sigmoid output)
+        mask = self.refine_blocks[0](concat_input)  # (B, 1, H_i, W_i)
+        
+        # Apply mask to residual (element-wise multiplication)
+        refined_mid_residual = residuals[mid_level] * mask
+        
+        # Reconstruct the intermediate level
+        mid_reconstruction = upsampled_guidance + refined_mid_residual  # I'_1 at 384×512
         
         # =====================================================================
-        # Step 3: Recompose refined pyramid into high-res output
+        # Step 3: Recompose to high-res output
         # =====================================================================
-        # refined_residuals is now [L'_0, L'_1, L'_2]
-        output = self.decomposer.recompose(refined_residuals, num_levels=self.num_levels)
+        # The high-res level (Level 0, 768×1024) residual is passed through
+        # unchanged (no refinement at 768×1024, per paper).
+        upsampled_high = F.interpolate(
+            mid_reconstruction,
+            size=residuals[0].shape[-2:],
+            mode='nearest'
+        )
+        output = residuals[0] + upsampled_high  # I'_0 at 768×1024
         
         # CRITICAL FIX: Clamp output to valid image range [0, 1]
         # Without this, numerical instability from uninitialized residuals can cause

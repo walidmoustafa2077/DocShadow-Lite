@@ -63,9 +63,11 @@ model:
     mask_scale: 2.0            # Default: suppress-only mode (fixed via audit)
     
     # Pyramid decomposition (from Plan.md Phase 1)
+    # Paper alignment (arXiv 2303.12862): "The residual refinement network
+    # operates on the intermediate resolution of (384×512)."
     # Level 2 (Low):  192×256 (downsampled by 4x, fed to frozen IOANet)
-    # Level 1 (Mid):  384×512 (downsampled by 2x, refine with first RefinementBlock)
-    # Level 0 (High): 768×1024 (original, refine with second RefinementBlock)
+    # Level 1 (Mid):  384×512 (refined with the single RefinementBlock)
+    # Level 0 (High): 768×1024 (residual passed through unchanged, no refinement)
 
 # GPU Optimization 
 gpu_optimization:

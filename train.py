@@ -1,7 +1,12 @@
 import argparse
+import sys
 import warnings
 from pathlib import Path
 from collections import defaultdict
+
+# Ensure the project root is on sys.path so `src` is importable
+# regardless of the current working directory (e.g. on Kaggle).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
