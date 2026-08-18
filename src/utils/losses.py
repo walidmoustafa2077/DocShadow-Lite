@@ -34,22 +34,18 @@ class ShadowRemovalLoss(nn.Module):
         self,
         l1_weight: float = 10.0,
         lpips_weight: float = 5.0,
-        shadow_weight_multiplier: float = 5.0,  # 5x weighting for shadow regions (up from 2.0)
         device: str = "cuda"
     ):
         """
         Args:
             l1_weight: Weight for L1 loss (default: 10.0)
             lpips_weight: Weight for LPIPS perceptual loss (default: 5.0)
-            shadow_weight_multiplier: Multiplier for shadow regions in L1 loss (default: 5.0)
-                Higher value forces network to output larger residuals for deep shadows
             device: Device for LPIPS model
         """
         super().__init__()
         
         self.l1_weight = l1_weight
         self.lpips_weight = lpips_weight
-        self.shadow_weight_multiplier = shadow_weight_multiplier
         
         # Initialize LPIPS with AlexNet backbone (paper alignment)
         # The paper cites LPIPS [20]; the standard/default backbone is AlexNet.

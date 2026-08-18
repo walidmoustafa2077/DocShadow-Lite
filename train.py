@@ -321,7 +321,6 @@ class Trainer:
         loss_fn = ShadowRemovalLoss(
             l1_weight=config["losses"]["l1_weight"],
             lpips_weight=config["losses"]["lpips_weight"],
-            shadow_weight_multiplier=config["losses"].get("shadow_weight_multiplier", 2.0),
             device=str(self.device)
         )
         
@@ -658,8 +657,7 @@ class Stage2Trainer:
             ioanet_model=ioanet,
             base_channels=stage2_config.get("base_channels", 32),
             num_levels=stage2_config.get("num_levels", 3),
-            refine_blocks=stage2_config.get("refine_blocks", 2),
-            mask_scale=stage2_config.get("mask_scale", 1.0)  # Risk 2 fix: Pass mask_scale from config
+            refine_blocks=stage2_config.get("refine_blocks", 2)
         )
         
         model = model.to(self.device)

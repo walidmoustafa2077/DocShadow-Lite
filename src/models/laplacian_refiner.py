@@ -104,22 +104,18 @@ class RefinementBlock(nn.Module):
         self,
         in_channels: int,
         base_channels: int = 32,
-        num_blocks: int = 2,
-        mask_scale: float = 1.0
+        num_blocks: int = 2
     ):
         """
         Args:
             in_channels: Input channels (typically 6 = 3 for residual + 3 for upsampled low-res)
             base_channels: Number of internal channels for depthwise separable blocks
             num_blocks: Number of depthwise separable blocks to stack
-            mask_scale: Scaling factor for mask output. Default 1.0 → mask ∈ [0,1].
-                       Set to 2.0 to enable contrast amplification → mask ∈ [0,2].
         """
         super().__init__()
         
         self.in_channels = in_channels
         self.base_channels = base_channels
-        self.mask_scale = mask_scale
         
         # Normalize mixed-range concatenated input (residuals [-1,1] + upsampled low-res [0,1])
         # This stabilizes BatchNorm in depthwise separable blocks
@@ -141,23 +137,19 @@ class RefinementBlock(nn.Module):
         ])
         
         # Output projection to 1 channel (mask)
-        # Final sigmoid activation produces values in [0, 1], scaled by mask_scale
+        # Paper alignment: standard sigmoid produces values in [0, 1] (suppress only).
+        # No mask_scale multiplier (not in the paper).
         self.proj_out = nn.Sequential(
             nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0),
             nn.Sigmoid()
         )
-        
-        # Apply mask_scale to shift sigmoid range [0,1] → [0, mask_scale]
-        # mask_scale=1.0: suppress only (standard Sigmoid)
-        # mask_scale=2.0: allow both suppression and amplification (contrast restoration)
-        self.register_buffer('mask_scale_factor', torch.tensor(mask_scale))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Concatenated input (B, in_channels, H, W)
         Returns:
-            Mask M_i (B, 1, H, W) with values in [0, 1] (or [0, mask_scale] if scaled)
+            Mask M_i (B, 1, H, W) with values in [0, 1]
         """
         # Normalize mixed-range concatenation (residuals [-1,1] + upsampled guidance [0,1])
         x = self.input_norm(x)
@@ -169,12 +161,8 @@ class RefinementBlock(nn.Module):
         for block in self.blocks:
             x = block(x) + x  # Residual connection
         
-        # Project to mask (single channel, sigmoid)
+        # Project to mask (single channel, sigmoid in [0,1])
         mask = self.proj_out(x)
-        
-        # Apply scaling: shift sigmoid range [0,1] → [0, mask_scale]
-        # Allows optional contrast amplification beyond standard suppression
-        mask = mask * self.mask_scale_factor
         
         return mask
 
@@ -322,21 +310,18 @@ class LaplacianRefiner(nn.Module):
         self,
         base_channels: int = 32,
         num_levels: int = 3,
-        refine_blocks: int = 2,
-        mask_scale: float = 1.0
+        refine_blocks: int = 2
     ):
         """
         Args:
             base_channels: Base channel count for refinement blocks (budget: 32 or 16)
             num_levels: Number of pyramid levels (typically 3)
             refine_blocks: Number of depthwise separable blocks per refinement network
-            mask_scale: Mask scaling factor. Default 1.0 (suppress only). Set to 2.0 for contrast boost.
         """
         super().__init__()
         
         self.base_channels = base_channels
         self.num_levels = num_levels
-        self.mask_scale = mask_scale
         self.decomposer = LaplacianDecomposer()
         
         # Paper alignment: the residual refinement network operates ONLY at the
@@ -346,8 +331,7 @@ class LaplacianRefiner(nn.Module):
             RefinementBlock(
                 in_channels=6,
                 base_channels=base_channels,
-                num_blocks=refine_blocks,
-                mask_scale=mask_scale  # Pass mask_scale to each refinement block
+                num_blocks=refine_blocks
             )
         ])
     
@@ -459,8 +443,7 @@ class LPIOANet(nn.Module):
         ioanet_model: nn.Module,
         base_channels: int = 32,
         num_levels: int = 3,
-        refine_blocks: int = 2,
-        mask_scale: float = 1.0
+        refine_blocks: int = 2
     ):
         """
         Args:
@@ -468,7 +451,6 @@ class LPIOANet(nn.Module):
             base_channels: Base channel count for refinement blocks
             num_levels: Number of pyramid levels
             refine_blocks: Number of depthwise separable blocks per refinement network
-            mask_scale: Mask scaling factor (1.0=suppress only, 2.0=allow contrast boost)
         """
         super().__init__()
         
@@ -476,8 +458,7 @@ class LPIOANet(nn.Module):
         self.refiner = LaplacianRefiner(
             base_channels=base_channels,
             num_levels=num_levels,
-            refine_blocks=refine_blocks,
-            mask_scale=mask_scale  # Risk 2 fix: Pass mask_scale to LaplacianRefiner
+            refine_blocks=refine_blocks
         )
         
         # Freeze IOANet parameters

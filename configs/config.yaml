@@ -25,18 +25,20 @@ data:
   # Plan.md Phase 5: Data Extraction - 768×1024 high-res images
   input_resolution_stage2: [768, 1024]  # [W, H] format - 4x upsampling from Stage 1
   
-  # Augmentation settings
+  # Augmentation settings (paper alignment: arXiv 2303.12862 + WACV 2023)
+  # Paper uses: illumination augmentation, shadow color modification,
+  # random horizontal flip, and random crop. NO rotation.
   augmentation:
     enabled: true
     illumination_strength: 0.1    # Illumination augmentation strength (Stage 1)
     shadow_color_shift: 0.05      # Shadow color shift strength (Stage 1)
-    rotation_range: 5             # Max rotation angle in degrees (Stage 1)
+    rotation_range: 0             # Paper does NOT use rotation (set to 0)
     
   # Stage 2 augmentation (subtler to preserve text quality)
   augmentation_stage2:
     illumination_strength: 0.15   # Slightly higher for high-res
     shadow_color_shift: 0.08      # Slightly higher for high-res
-    rotation_range: 3             # More conservative for text preservation
+    rotation_range: 0             # Paper does NOT use rotation (set to 0)
 
 # Model configuration
 model:
@@ -55,12 +57,6 @@ model:
     base_channels: 16          # CRITICAL FIX: Reduced from 64 to 16 channels. At 768x1024, 64 channels = 11.5 GFLOPs. 16 channels = ~1.35-1.4 GFLOPs (pointwise ops drop by 16x since 64^2/16^2 = 16)
     num_levels: 3              # Laplacian pyramid levels: Level 0 (768×1024), Level 1 (384×512), Level 2 (192×256 - frozen IOANet)
     refine_blocks: 2           # Number of depthwise separable blocks per refinement network (Num Blocks=2)
-    
-    # Mask scaling for refinement
-    # mask_scale=1.0: Standard behavior, masks can only suppress [0, 1]
-    # mask_scale=2.0: Allow contrast amplification for text darkened by shadows [0, 2]
-    # Set to 2.0 to enable if Stage 1 output has text darker than clean reference
-    mask_scale: 2.0            # Default: suppress-only mode (fixed via audit)
     
     # Pyramid decomposition (from Plan.md Phase 1)
     # Paper alignment (arXiv 2303.12862): "The residual refinement network
@@ -98,7 +94,6 @@ training:
     losses:
       l1_weight: 10.0    # L1 pixel loss weight - Reduced to avoid dirty background matching
       lpips_weight: 5.0 # LPIPS perceptual loss weight (VGG-16) - Increased for edge sharpness
-      shadow_weight_multiplier: 5.0  # Multiplier for shadow regions in L1 loss (1.0 + mask * this value)
       
     checkpoint_interval: 20  # Save checkpoint every N epochs
     validation_interval: 5   # Validate every N epochs
