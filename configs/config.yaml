@@ -1,0 +1,134 @@
+# DocShadow-Lite IOANet Configuration
+# Implementation based on Plan.md
+
+# Dataset configuration
+dataset:
+  # Root directory for dataset (used by both Stage 1 and Stage 2)
+  root_dir: ""
+  
+  # DataLoader workers (for 5k images on Windows):
+  # 0 = Slowest, lowest RAM (main process only)
+  # 4 = Recommended for 4-core CPU (faster, moderate RAM)
+  # 8 = For 8+ core CPU (fastest, higher RAM)
+  num_workers: 4  # Optimized for large datasets with persistent workers
+  prefetch_factor: 2      # Preload 2 batches per worker (reduces CPU idle)
+  pin_memory: true        # CRITICAL: speeds up CPU->GPU transfer
+  persistent_workers: true # CRITICAL: keeps workers alive between epochs
+  
+# Data dimensions and preprocessing
+data:
+  # Stage 1 resolution (IOANet operates at this resolution)
+  # Plan.md Phase A: Resolution Setup - 192×256 (Width × Height) - PORTRAIT MODE
+  input_resolution: [192, 256]  # [W, H] format - Portrait orientation support
+  
+  # Stage 2 resolution (LPTN-Lite high-resolution refinement)
+  # Plan.md Phase 5: Data Extraction - 768×1024 high-res images
+  input_resolution_stage2: [768, 1024]  # [W, H] format - 4x upsampling from Stage 1
+  
+  # Augmentation settings
+  augmentation:
+    enabled: true
+    illumination_strength: 0.1    # Illumination augmentation strength (Stage 1)
+    shadow_color_shift: 0.05      # Shadow color shift strength (Stage 1)
+    rotation_range: 5             # Max rotation angle in degrees (Stage 1)
+    
+  # Stage 2 augmentation (subtler to preserve text quality)
+  augmentation_stage2:
+    illumination_strength: 0.15   # Slightly higher for high-res
+    shadow_color_shift: 0.08      # Slightly higher for high-res
+    rotation_range: 3             # More conservative for text preservation
+
+# Model configuration
+model:
+  stage1:
+    input_channels: 3
+    output_channels: 3
+    pretrained: true         # Use pretrained weights for faster convergence
+
+    # Checkpoint path for Stage 1 Model
+    checkpoint: "outputs/checkpoints/stage1/best_model.pth"  # Stage 1 checkpoint for Stage 2 training
+  
+  # Stage 2: Laplacian Pyramid Refinement Network (LPTN-Lite)
+  # Plan.md Phase 5: LPTN-Lite Refinement Architecture
+  stage2:
+    # Depthwise separable convolutions - reduce complexity from 22.8 to 1.47 GFLOPs
+    base_channels: 16          # CRITICAL FIX: Reduced from 64 to 16 channels. At 768x1024, 64 channels = 11.5 GFLOPs. 16 channels = ~1.35-1.4 GFLOPs (pointwise ops drop by 16x since 64^2/16^2 = 16)
+    num_levels: 3              # Laplacian pyramid levels: Level 0 (768×1024), Level 1 (384×512), Level 2 (192×256 - frozen IOANet)
+    refine_blocks: 2           # Number of depthwise separable blocks per refinement network (Num Blocks=2)
+    
+    # Mask scaling for refinement
+    # mask_scale=1.0: Standard behavior, masks can only suppress [0, 1]
+    # mask_scale=2.0: Allow contrast amplification for text darkened by shadows [0, 2]
+    # Set to 2.0 to enable if Stage 1 output has text darker than clean reference
+    mask_scale: 2.0            # Default: suppress-only mode (fixed via audit)
+    
+    # Pyramid decomposition (from Plan.md Phase 1)
+    # Level 2 (Low):  192×256 (downsampled by 4x, fed to frozen IOANet)
+    # Level 1 (Mid):  384×512 (downsampled by 2x, refine with first RefinementBlock)
+    # Level 0 (High): 768×1024 (original, refine with second RefinementBlock)
+
+# GPU Optimization 
+gpu_optimization:
+  # Mixed Precision (AMP) - FP16 for faster compute and reduced VRAM
+  use_amp: true           # Enable automatic mixed precision
+  amp_dtype: "float16"    # Use FP16 for faster compute and 50% less VRAM
+  
+  # Gradient clipping to stabilize training with AMP
+  clip_grad_norm: 1.0
+        
+# Training configuration
+training:
+  stage1:
+    # Plan.md Phase E: Training Regimen - 1000 epochs
+    epochs: 1000       # Training epochs - UPDATED to match Plan.md
+    
+    # Plan.md Phase A: Mixed Batch Sampling
+    # Batch size: 32 (6 from small pool + 26 from large pool)
+    # Note: If using standard dataloader without custom sampler, use batch_size: 32
+    # If using MixedBatchSampler, this is handled by the sampler
+    batch_size: 32    # Fixed batch size for mixed sampling strategy
+    
+    learning_rate: 0.0002  # Learning rate (2e-4) - Adam optimizer (WACV 2023 LRA&LDRA paper)
+    
+    # Plan.md Phase E: Loss Function (Equation 1)
+    # Paper alignment: Favor perceptual quality (LPIPS) over pixel matching (L1)
+    # This prevents blur artifacts and forces structure preservation
+    losses:
+      l1_weight: 10.0    # L1 pixel loss weight - Reduced to avoid dirty background matching
+      lpips_weight: 5.0 # LPIPS perceptual loss weight (VGG-16) - Increased for edge sharpness
+      shadow_weight_multiplier: 5.0  # Multiplier for shadow regions in L1 loss (1.0 + mask * this value)
+      
+    checkpoint_interval: 20  # Save checkpoint every N epochs
+    validation_interval: 5   # Validate every N epochs
+  
+  stage2:
+    # Plan.md Phase 4: Stage 2 Training Strategy - 200 epochs
+    epochs: 200         # Fewer epochs than Stage 1 (200 vs 1000)
+    
+    # Batch size: smaller due to high-resolution (768×1024)
+    # Stage 1: 32 images of 192×256
+    # Stage 2: 16 images of 768×1024 
+    batch_size: 16      # Reduced batch size for high-res (memory constraint)
+    
+    learning_rate: 0.0002  # Same learning rate as Stage 1 (2e-4, WACV 2023 paper)
+    
+    # Plan.md Phase 4: Loss Function - L1 ONLY
+    # Stage 2 doesn't use LPIPS because:
+    # 1. Perceptual structure already solved by IOANet
+    # 2. Stage 2 purely refines high-res pixel intensities (text contrast)
+    # 3. L1 is faster and sufficient for refinement
+    losses:
+      l1_weight: 1.0    # L1 loss only (no LPIPS for Stage 2)
+    
+    checkpoint_interval: 10  # Save checkpoint every 10 epochs
+    validation_interval: 2   # Validate frequently (200 epochs total)
+    
+    # Plan.md Phase 6: Memory Management
+    # Use torch.no_grad() for frozen IOANet during forward pass
+    # This saves significant VRAM since IOANet is 22.8 GFLOPs but not trained
+
+# Output and logging
+output:
+  checkpoint_dir: "outputs/checkpoints"
+  log_dir: "outputs/logs"
+  sample_output_dir: "outputs/samples"
