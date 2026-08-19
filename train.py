@@ -19,6 +19,21 @@ from src.data.dataset import create_dataloaders, create_stage2_dataloaders
 from src.utils.losses import ShadowRemovalLoss, MetricsCalculator
 
 
+def _cheap_metrics(output: torch.Tensor, target: torch.Tensor) -> dict:
+    """
+    Compute only the cheap metrics (MAE + PSNR) for the training loop.
+
+    SSIM is intentionally excluded here: it runs 6 full-resolution conv2d
+    passes per call and is the dominant per-batch cost. It is computed only
+    during validation (see MetricsCalculator.compute_all).
+    """
+    with torch.no_grad():
+        mae = torch.nn.functional.l1_loss(output, target).item()
+        mse = torch.nn.functional.mse_loss(output, target).item()
+        psnr = 100.0 if mse < 1e-10 else 10 * torch.log10(torch.tensor(1.0 / mse)).item()
+    return {'mae': mae, 'psnr': psnr}
+
+
 class Trainer:
     """Stage 1 IOANet Trainer (192×256 resolution)."""
     
@@ -840,16 +855,17 @@ class Stage2Trainer:
                 
                 train_losses.append(loss.item())
                 
+                # Cheap per-batch metrics (MAE + PSNR only; SSIM is too expensive
+                # to run every batch and is deferred to validation).
                 with torch.no_grad():
-                    metrics = MetricsCalculator.compute_all(output, target_img)
+                    metrics = _cheap_metrics(output, target_img)
                     for k, v in metrics.items():
                         train_metrics[k] += v
                 
                 pbar.set_postfix({
                     'Loss': f"{loss.item():.4f}",
                     'MAE': f"{metrics['mae']:.4f}",
-                    'PSNR': f"{metrics['psnr']:.1f}",
-                    'SSIM': f"{metrics['ssim']:.3f}"
+                    'PSNR': f"{metrics['psnr']:.1f}"
                 })
             
             avg_train_loss = np.mean(train_losses)
@@ -867,8 +883,7 @@ class Stage2Trainer:
                 f"[Train] Epoch {epoch+1:3d} | "
                 f"Loss: {avg_train_loss:.4f} | "
                 f"MAE: {train_metrics['mae']:.4f} | "
-                f"PSNR: {train_metrics['psnr']:.2f} dB | "
-                f"SSIM: {train_metrics['ssim']:.3f}"
+                f"PSNR: {train_metrics['psnr']:.2f} dB"
             )
             
             # Validation

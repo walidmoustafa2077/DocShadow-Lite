@@ -92,11 +92,12 @@ class RefinementBlock(nn.Module):
     
     Architecture:
     1. Depthwise Separable Conv blocks to process residual + upsampled low-res
-    2. Output: Sigmoid-activated mask (values in [0, 1])
+    2. Output: Tanh-activated mask (values in [-1, 1])
     
-    Input: Concatenation of:
+    Input: Concatenation of (paper: [h, up(I), up(Î)]):
         - High-frequency residual L_i (from pyramid decomposition)
-        - Upsampled low-res output (from IOANet or previous level)
+        - Upsampled low-frequency base I_L
+        - Upsampled low-res output Î_L (from IOANet or previous level)
     Output: Mask M_i (same spatial dimensions, 1 channel)
     """
     
@@ -108,7 +109,7 @@ class RefinementBlock(nn.Module):
     ):
         """
         Args:
-            in_channels: Input channels (typically 6 = 3 for residual + 3 for upsampled low-res)
+            in_channels: Input channels (9 = 3 residual + 3 upsampled low-freq + 3 upsampled low-res output)
             base_channels: Number of internal channels for depthwise separable blocks
             num_blocks: Number of depthwise separable blocks to stack
         """
@@ -137,11 +138,13 @@ class RefinementBlock(nn.Module):
         ])
         
         # Output projection to 1 channel (mask)
-        # Paper alignment: standard sigmoid produces values in [0, 1] (suppress only).
-        # No mask_scale multiplier (not in the paper).
+        # Paper alignment (LPTN Figure 2): Tanh activation, values in [-1, 1].
+        # Tanh allows the mask to both suppress AND amplify high-frequency
+        # content (e.g. boost dimmed text edges), unlike sigmoid which can only
+        # attenuate. This is the key to breaking the PSNR plateau.
         self.proj_out = nn.Sequential(
             nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid()
+            nn.Tanh()
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -161,7 +164,7 @@ class RefinementBlock(nn.Module):
         for block in self.blocks:
             x = block(x) + x  # Residual connection
         
-        # Project to mask (single channel, sigmoid in [0,1])
+        # Project to mask (single channel, tanh in [-1,1])
         mask = self.proj_out(x)
         
         return mask
@@ -183,7 +186,7 @@ class MaskFinetuneBlock(nn.Module):
     level and applies 2 lightweight convolutional layers to finetune it for the
     current (higher-resolution) level.
     
-    Architecture: [Conv 1→C 3×3] → LeakyReLU → [Conv C→1 1×1] → Sigmoid
+    Architecture: [Conv 1→C 3×3] → LeakyReLU → [Conv C→1 1×1] → Tanh
     """
     
     def __init__(self, base_channels: int = 16):
@@ -191,19 +194,19 @@ class MaskFinetuneBlock(nn.Module):
         self.conv1 = nn.Conv2d(1, base_channels, kernel_size=3, stride=1, padding=1)
         self.act = nn.LeakyReLU(negative_slope=0.1, inplace=True)
         self.conv2 = nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0)
-        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
     
     def forward(self, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            mask: Upsampled mask from previous level (B, 1, H, W) in [0, 1]
+            mask: Upsampled mask from previous level (B, 1, H, W) in [-1, 1]
         Returns:
-            Finetuned mask (B, 1, H, W) in [0, 1]
+            Finetuned mask (B, 1, H, W) in [-1, 1]
         """
         x = self.conv1(mask)
         x = self.act(x)
         x = self.conv2(x)
-        return self.sigmoid(x)
+        return self.tanh(x)
 
 
 # =============================================================================
@@ -330,9 +333,10 @@ class LaplacianRefiner(nn.Module):
         self.decomposer = LaplacianDecomposer()
         
         # Bottleneck level (384×512): 3 residual blocks predict the mask M_1
+        # Paper concat: [h_{L-1}, up(I_L), up(Î_L)] = 3 + 3 + 3 = 9 channels
         self.refine_blocks = nn.ModuleList([
             RefinementBlock(
-                in_channels=6,
+                in_channels=9,
                 base_channels=base_channels,
                 num_blocks=refine_blocks
             )
@@ -361,6 +365,7 @@ class LaplacianRefiner(nn.Module):
         # =====================================================================
         pyramid = self.decomposer.decompose(high_res_input, num_levels=self.num_levels)
         residuals = pyramid['residuals']  # [L_0, L_1, L_2]
+        levels = pyramid['levels']        # [I_0, I_1, I_2] (I_2 = low-freq base)
         
         # =====================================================================
         # Step 2: Bottleneck refinement (Level 1, 384×512)
@@ -370,16 +375,23 @@ class LaplacianRefiner(nn.Module):
         
         mid_level = self.num_levels - 2  # index of the intermediate level (1)
         
-        # Upsample previous reconstruction to match the intermediate level
+        # Upsample previous reconstruction (Î_L) to match the intermediate level
         upsampled_guidance = F.interpolate(
             current_reconstruction,
             size=residuals[mid_level].shape[-2:],
             mode='nearest'
         )
         
-        # Concatenate residual and upsampled guidance
+        # Upsample the low-frequency base (I_L) to match the intermediate level
+        upsampled_low_freq = F.interpolate(
+            levels[-1],
+            size=residuals[mid_level].shape[-2:],
+            mode='nearest'
+        )
+        
+        # Concatenate [h_{L-1}, up(I_L), up(Î_L)] (paper: 9 channels)
         concat_input = torch.cat(
-            [residuals[mid_level], upsampled_guidance],
+            [residuals[mid_level], upsampled_low_freq, upsampled_guidance],
             dim=1
         )
         
