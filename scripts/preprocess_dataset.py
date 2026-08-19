@@ -30,12 +30,16 @@ def process_single_image(args):
         return False, f"{f.name}: {e}"
 
 
-def resize_and_save(source_dir, dest_dir, target_size, quality=95):
+def resize_and_save(source_dir, dest_dir, target_size, quality=95, fraction=1.0):
     """
     Resize images to target_size.
     
     Args:
         target_size: tuple of (WIDTH, HEIGHT) following W×H paper convention
+        fraction: Fraction of the dataset to process (0.0 < fraction <= 1.0).
+                  Useful when disk space is limited. A deterministic subset is
+                  sampled (sorted order, evenly spaced) so input/target/mask
+                  stay aligned across the three folders.
     """
     src_path = Path(source_dir)
     dest_path = Path(dest_dir)
@@ -93,7 +97,18 @@ def resize_and_save(source_dir, dest_dir, target_size, quality=95):
                 print(f"[SKIP] {desc} - no images found")
                 continue
             
-            print(f"[Processing] {desc} - {len(files)} images")
+            # Sample a deterministic subset if fraction < 1.0.
+            # Sorted order + evenly-spaced indices keeps input/target/mask
+            # aligned (same filenames selected across all three folders).
+            if fraction < 1.0:
+                files = sorted(files)
+                n_keep = max(1, int(round(len(files) * fraction)))
+                if n_keep < len(files):
+                    step = len(files) / n_keep
+                    indices = [int(i * step) for i in range(n_keep)]
+                    files = [files[i] for i in indices]
+            
+            print(f"[Processing] {desc} - {len(files)} images (fraction={fraction})")
             
             tasks = [(f, current_dest, target_size_cv, quality, type_dir) for f in files]
             
@@ -137,8 +152,18 @@ def main():
                         help="Path to config file")
     parser.add_argument("--quality", type=int, default=95,
                         help="JPEG quality (1-100, default: 95)")
+    parser.add_argument("--fraction", type=float, default=1.0,
+                        help="Fraction of the dataset to process (0.0 < fraction <= 1.0, "
+                             "e.g. 0.5 for half, 0.25 for a quarter). Default: 1.0 (all)")
     
     args = parser.parse_args()
+    
+    # Validate fraction
+    if not (0.0 < args.fraction <= 1.0):
+        parser.error("--fraction must be in the range (0.0, 1.0]")
+    
+    if args.fraction < 1.0:
+        print(f"[OK] Processing {args.fraction:.0%} of the dataset (subset mode)")
     
     # Load target size from config if not provided via CLI
     if args.size is None:
@@ -155,7 +180,7 @@ def main():
         target_size = tuple(args.size)
         print(f"[OK] Using CLI argument --size: {target_size}")
     
-    resize_and_save(args.source, args.dest, target_size, args.quality)
+    resize_and_save(args.source, args.dest, target_size, args.quality, args.fraction)
 
 
 if __name__ == "__main__":
