@@ -40,7 +40,13 @@ def load_model(checkpoint_path: str, config_path: str, device: str = "cuda"):
         pretrained=False
     )
     
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
     model = model.to(device)
     model.eval()
     
@@ -154,13 +160,13 @@ def main():
     print(f"  SSIM: {results['ssim']:.4f}")
     
     print("\n[Region-Based Metrics]")
-    print(f"  MAE (Overall):    {results['mae_overall']:.4f}")
-    print(f"  MAE (Shadow):     {results['mae_shadow']:.4f}")
-    print(f"  MAE (Non-Shadow): {results['mae_non_shadow']:.4f}")
+    print(f"  MAE (Overall):    {results['overall_mae']:.4f}")
+    print(f"  MAE (Shadow):     {results['shadow_mae']:.4f}")
+    print(f"  MAE (Non-Shadow): {results['non_shadow_mae']:.4f}")
     
     # Paper-style format (MAE: overall/non-shadow/shadow)
     print("\n[Paper Format (MAE: overall/non-shadow/shadow)]")
-    mae_str = f"{results['mae_overall']*100:.4f} / {results['mae_non_shadow']*100:.4f} / {results['mae_shadow']*100:.4f}"
+    mae_str = f"{results['overall_mae']*100:.4f} / {results['non_shadow_mae']*100:.4f} / {results['shadow_mae']*100:.4f}"
     print(f"  MAE: {mae_str}")
     print(f"  PSNR: {results['psnr']:.2f}")
     

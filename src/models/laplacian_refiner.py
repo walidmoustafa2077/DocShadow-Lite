@@ -15,7 +15,7 @@ Key Constraint: 1.47 GFLOPs (vs 22.8 in full version)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict, List
+from typing import Dict
 
 
 # =============================================================================
@@ -238,41 +238,6 @@ class LaplacianDecomposer(nn.Module):
             'residuals': residuals,
             'shapes': shapes
         }
-    
-    @staticmethod
-    def recompose(refined_residuals: List[torch.Tensor], num_levels: int = 3) -> torch.Tensor:
-        """
-        Reconstruct image from refined Laplacian pyramid.
-        
-        Given refined residuals [L'_0, L'_1, L'_2], reconstruct via:
-        I'_0 = L'_0 + Upsample(I'_1)
-        I'_1 = L'_1 + Upsample(I'_2)
-        I'_2 = L'_2
-        
-        Args:
-            refined_residuals: List of refined Laplacian coefficients [L'_0, L'_1, L'_2]
-            num_levels: Number of pyramid levels
-        
-        Returns:
-            Reconstructed image at full resolution (same as L'_0)
-        """
-        # Start from the lowest level
-        current = refined_residuals[-1]  # L'_2
-        
-        # Progressively upsample and add residuals (bottom-up)
-        for i in range(num_levels - 2, -1, -1):
-            # Upsample current to match residual i's spatial dimensions
-            # Using 'nearest' (paper alignment): LP-IOANet reconstruction path
-            # uses Nearest x2 upsampling to preserve high-frequency text edges.
-            upsampled = F.interpolate(
-                current,
-                size=refined_residuals[i].shape[-2:],
-                mode='nearest'
-            )
-            # Add residual
-            current = refined_residuals[i] + upsampled
-        
-        return current
 
 
 # =============================================================================
@@ -288,22 +253,22 @@ class LaplacianRefiner(nn.Module):
     
     Architecture:
     1. Decompose high-res input into Laplacian pyramid (3 levels)
-    2. Refine ONLY the intermediate level (384×512) with a RefinementBlock:
+    2. Refine the intermediate level (384×512) with a RefinementBlock:
        - Concatenate residual with upsampled lower-res output
        - Pass through RefinementBlock to predict mask
-       - Apply mask to residual: L'_i = L_i ⊗ M_i
-    3. The high-res level (768×1024) residual is passed through unchanged
-    4. Recompose refined pyramid into high-res output
+       - Apply mask to residual: L'_1 = L_1 ⊙ M_1
+    3. Reconstruct the high-res output by adding the high-res residual L_0
+       UNCHANGED (no mask applied): I_out = clamp(Upsample(I'_1) + L_0, 0, 1)
     
     Paper alignment (arXiv 2303.12862): "The residual refinement network
-    operates on the intermediate resolution of (384×512)." The 768×1024 output
-    is obtained by upsampling the refined 384×512 result, NOT by a separate
-    refinement at 768×1024.
+    operates on the intermediate resolution of (384×512)." The convolutional
+    refinement network lives ONLY at 384×512 (to save GFLOPs). The high-res
+    residual L_0 is added unchanged to preserve high-frequency text detail.
     
     Flow for 768×1024 input:
     - Level 2 (Low): 192×256 (fed to frozen IOANet)
-    - Level 1 (Mid): 384×512 (refine with RefinementBlock)
-    - Level 0 (High): 768×1024 (residual passed through unchanged)
+    - Level 1 (Mid): 384×512 (refine with RefinementBlock → mask M_1)
+    - Level 0 (High): 768×1024 (residual L_0 added unchanged, no mask)
     """
     
     def __init__(
@@ -401,19 +366,23 @@ class LaplacianRefiner(nn.Module):
         # =====================================================================
         # Step 3: Recompose to high-res output
         # =====================================================================
-        # The high-res level (Level 0, 768×1024) residual is passed through
-        # unchanged (no refinement at 768×1024, per paper).
+        # Paper alignment (arXiv 2303.12862): the residual refinement network
+        # operates ONLY at the intermediate resolution (384×512). The high-res
+        # level (768×1024) residual L_0 is added UNCHANGED (no mask applied).
+        #
+        #   I_out = clamp(Upsample(I'_1) + L_0, 0, 1)
+        #
+        # This preserves the high-frequency text detail that would otherwise be
+        # gated out by a mask. Applying a mask to L_0 (as a previous version did)
+        # destroys text edges and drops PSNR below Stage 1.
         upsampled_high = F.interpolate(
             mid_reconstruction,
             size=residuals[0].shape[-2:],
             mode='nearest'
         )
-        output = residuals[0] + upsampled_high  # I'_0 at 768×1024
+        output = upsampled_high + residuals[0]  # I'_0 = Upsample(I'_1) + L_0 (L_0 unchanged)
         
-        # CRITICAL FIX: Clamp output to valid image range [0, 1]
-        # Without this, numerical instability from uninitialized residuals can cause
-        # output ranges like [-6.6, 8.4] which breaks gradient flow and loss computation.
-        # This is expected behavior with random weights in first few batches.
+        # Clamp output to valid image range [0, 1] (paper: clamp(..., 0, 1))
         output = torch.clamp(output, 0.0, 1.0)
         
         return output

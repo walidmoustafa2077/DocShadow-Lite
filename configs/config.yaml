@@ -65,15 +65,6 @@ model:
     # Level 1 (Mid):  384×512 (refined with the single RefinementBlock)
     # Level 0 (High): 768×1024 (residual passed through unchanged, no refinement)
 
-# GPU Optimization 
-gpu_optimization:
-  # Mixed Precision (AMP) - FP16 for faster compute and reduced VRAM
-  use_amp: true           # Enable automatic mixed precision
-  amp_dtype: "float16"    # Use FP16 for faster compute and 50% less VRAM
-  
-  # Gradient clipping to stabilize training with AMP
-  clip_grad_norm: 1.0
-        
 # Training configuration
 training:
   stage1:

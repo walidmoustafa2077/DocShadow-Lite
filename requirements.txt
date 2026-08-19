@@ -7,4 +7,3 @@ tqdm>=4.60.0
 Pillow>=8.0.0
 lpips>=0.1.4
 tensorboard>=2.10.0
-thop>=0.1.1  # For GFLOPs computation (Phase F sanity checks)

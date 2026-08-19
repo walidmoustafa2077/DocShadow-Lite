@@ -15,9 +15,8 @@ Both stages support flexible input resizing—images are automatically resized t
 - **Dual-Stage Architecture**: IOANet (Stage 1) + LP-IOANet (Stage 2) for progressive refinement
 - **Flexible Resolution Handling**: On-the-fly resizing supports any input resolution
 - **Single root_dir**: Both stages use same dataset root with automatic multi-scale pyramid generation
-- **Lightweight**: ~4.90M parameters (simple backbone) or ~3.10M (MobileNet)
+- **Lightweight**: MobileNetV2 backbone (~3.10M parameters)
 - **Efficient Training**: Fast data loading with on-the-fly downsampling for Stage 2
-- **Flexible Backbones**: Choose between simple U-Net or MobileNetV2
 - **Comprehensive Metrics**: MAE, PSNR, SSIM with region-based analysis (shadow vs non-shadow)
 - **Dataset Support**: Kligler and SynDoc datasets (any resolution supported)
 
@@ -55,16 +54,15 @@ pip install -r requirements.txt
 
 ```bash
 # Train Stage 1 (IOANet at 192×256)
-python train.py --config configs/config.yaml
+python train.py --config configs/config.yaml --stage 1
 
 # Train Stage 2 (LP-IOANet at 768×1024)
-# First update config.yaml: training.stage: 2
-python train.py --config configs/config.yaml
+python train.py --config configs/config.yaml --stage 2
 ```
 
 Configuration is controlled via `configs/config.yaml`:
 - Single `dataset.root_dir` for all stages (automatic resizing on-the-fly)
-- Model hyperparameters (backbone, channels, depth)
+- Model hyperparameters (channels, refinement blocks)
 - Training settings (epochs, batch size, learning rate)
 - Loss weights
 - Augmentation parameters
@@ -82,7 +80,7 @@ python evaluate.py --model outputs/checkpoints/stage1/best_model.pth --config co
 
 ```bash
 # Run inference on single/batch images (Stage 1)
-python inference.py --image path/to/image.jpg --model outputs/checkpoints/stage1/best_model.pth --config configs/config.yaml
+python inference.py --input path/to/image.jpg --model outputs/checkpoints/stage1/best_model.pth --config configs/config.yaml
 ```
 
 ### Handling Different Input Resolutions
@@ -100,14 +98,15 @@ python scripts/preprocess_dataset.py --input Data/RawDataset --output Data/Cache
 ## Project Structure
 
 ```
-├── train.py                      # Main training script
+├── train.py                      # Main training script (Stage 1 & 2)
 ├── evaluate.py                   # Evaluation on test set
 ├── inference.py                  # Single/batch image inference
 ├── configs/
 │   └── config.yaml              # Central configuration file
 ├── src/
 │   ├── models/
-│   │   └── ioanet.py            # IOANet architecture
+│   │   ├── ioanet.py            # IOANet architecture (Stage 1)
+│   │   └── laplacian_refiner.py # Laplacian refiner (Stage 2)
 │   ├── data/
 │   │   └── dataset.py           # Dataset loaders
 │   └── utils/
@@ -133,31 +132,31 @@ python scripts/preprocess_dataset.py --input Data/RawDataset --output Data/Cache
 ### Two-Stage Pipeline
 
 #### Stage 1: IOANet (192×256)
-1. **InputAttention**: Channel-wise gating on raw shadow input (reduces noise)
-2. **Backbone**: Encoder-decoder network (simple U-Net or MobileNetV2)
-3. **Bottleneck**: Dense feature refinement at deepest level
-4. **Decoder**: Progressive upsampling with skip connections
-5. **OutputAttention**: Learned spatial gating for residual blending
-6. **Residual Blending**: `output = clamp(input + residual * mask, 0, 1)`
+
+Paper-aligned implementation (arXiv 2303.12862):
+
+1. **Input Attention (LRA)**: Coordinate Attention on the raw input, executed as a **parallel branch** (concurrent with the backbone)
+2. **Backbone**: MobileNetV2 encoder + Feature Boosting (FB) decoder, running on the **raw input**
+3. **Decoder**: Progressive upsampling with skip connections (1×1 "boost" convolutions)
+4. **Output Attention (LDRA)**: Coordinate Attention on the 3-channel residual
+5. **Long Residual Summation**: `output = LDRA(R(x)) + LRA(x)` (no clamping, no mask gating)
 
 #### Stage 2: LP-IOANet (768×1024)
+
 - **HR-Only Loading**: Loads full resolution images
 - **On-the-Fly Pyramid**: Creates 192×256 (low) → 384×512 (mid) → 768×1024 (high) pyramid
-- **Perfect Alignment**: Downsampling guarantees mathematically perfect multi-scale relationships
-- **Laplacian Refinement**: Learns high-frequency corrections via intermediate supervision
-- **Benefits**: No folder structure mismatches, perfect scale relationships, efficient GPU usage
+- **Frozen IOANet**: Stage 1 model is frozen (`requires_grad=False`, `eval()`)
+- **Laplacian Refinement**: A single depthwise-separable refinement block at 384×512 predicts a mask, which is upsampled and applied at 768×1024
+- **Benefits**: No folder structure mismatches, perfect scale relationships, efficient GPU usage (~1.47 GFLOPs)
 
 ### Loss Function
 
 **Stage 1 (IOANet)**:
-- Combined L1 + LPIPS loss
-- L1 Loss: Pixel-level reconstruction (weight: 20.0)
-- LPIPS Loss: Perceptual feature distance using frozen AlexNet (weight: 5.0)
+- Combined L1 + LPIPS loss: `10 × L1 + 5 × LPIPS`
+- LPIPS uses a frozen AlexNet backbone
 
 **Stage 2 (LP-IOANet)**:
-- Intermediate supervision at multiple scales
-- L1 Loss: Final output quality (weight: 1.0)
-- Intermediate L1: Mid-resolution refinement (weight: 0.5)
+- L1 loss only (no LPIPS)
 
 ### Metrics
 
@@ -172,38 +171,49 @@ Edit `configs/config.yaml` to customize:
 
 ```yaml
 dataset:
-  # Single root directory for all stages - supports any resolution
-  # Automatically resizes to target resolution during training
-  root_dir: "Data/ your dataset"
+  root_dir: "Data/your_dataset"
   num_workers: 4
 
 data:
   # Stage 1 resolution (IOANet input)
   input_resolution: [192, 256]      # [W, H]
-  
+
   # Stage 2 resolution (LP-IOANet output)
-  output_resolution: [768, 1024]    # [W, H]
-  
-  # Intermediate resolution for pyramid supervision
-  intermediate_resolution: [384, 512]  # [W, H]
-  
+  input_resolution_stage2: [768, 1024]  # [W, H]
+
   augmentation:
     enabled: true
     illumination_strength: 0.1
     shadow_color_shift: 0.05
-    rotation_range: 5
+    rotation_range: 0
 
 model:
   stage1:
-    backbone: "simple"        # or "mobilenet"
-    base_channels: 32
-    depth: 4
+    input_channels: 3
+    output_channels: 3
+    pretrained: true
+    checkpoint: "outputs/checkpoints/stage1/best_model.pth"
+
+  stage2:
+    base_channels: 16
+    num_levels: 3
+    refine_blocks: 2
 
 training:
   stage1:
-    epochs: 500
-    batch_size: 42
-    learning_rate: 0.0001
+    epochs: 1000
+    batch_size: 32
+    learning_rate: 0.0002
+    losses:
+      l1_weight: 10.0
+      lpips_weight: 5.0
+
+  stage2:
+    epochs: 200
+    batch_size: 16
+    learning_rate: 0.0002
+    losses:
+      l1_weight: 1.0
 ```
 
 ### Dataset Structure
@@ -227,10 +237,10 @@ Data/YourDataset/
 - **Single dataset**: Use one `root_dir` for both stages (automatic on-the-fly resizing)
 - **No preprocessing needed**: System handles resolution mismatch automatically
 - **Optional optimization**: Pre-cache dataset to 768×1024 for 10-15% Stage 2 speedup
-- **Early stopping**: Training halts after 50 epochs without validation improvement
-- **Validation frequency**: Validation runs every 5 epochs
+- **Early stopping**: Training halts after 50 epochs (Stage 1) / 30 epochs (Stage 2) without validation improvement
+- **Validation frequency**: Validation runs every 5 epochs (Stage 1) / 2 epochs (Stage 2)
 - **Debug samples**: Side-by-side visualizations saved to `outputs/samples/stage{N}/debug/`
-- **Memory**: Stage 2 requires 8GB VRAM (batch_size=4 recommended for 768×1024)
+- **Memory**: Stage 2 uses batch_size=16 (config default) for 768×1024
 
 ## Results
 
@@ -240,13 +250,6 @@ Expected metric ranges from domain expertise:
 - SSIM: > 0.95 (structural preservation)
 
 ## Development
-
-### Adding a New Backbone
-
-1. Add `_build_<name>_backbone()` in `src/models/ioanet.py`
-2. Update `__init__()` condition
-3. Implement `_forward_<name>()` method
-4. Update `configs/config.yaml` with new backbone option
 
 ### Extending Loss Function
 

@@ -10,12 +10,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 import cv2
 
 from src.models.ioanet import IOANet, get_model_info
-from src.models.laplacian_refiner import LPIOANet, LaplacianRefiner, count_parameters
+from src.models.laplacian_refiner import LPIOANet, count_parameters
 from src.data.dataset import create_dataloaders, create_stage2_dataloaders
 from src.utils.losses import ShadowRemovalLoss, MetricsCalculator
 
@@ -332,7 +331,6 @@ class Trainer:
         print(f"  Loss: L1×{config['losses']['l1_weight']} + LPIPS×{config['losses']['lpips_weight']} (VGG)")
         print(f"  Train Batches: {len(train_loader)}")
         print(f"  Val Batches: {len(val_loader)}")
-        print(f"  Shadow-Aware L1 Weighting: Enabled (2.0x in shadowed regions)")
         
         if start_epoch > 0:
             print(f"  Resuming from Epoch: {start_epoch + 1}")
@@ -357,12 +355,10 @@ class Trainer:
             for batch_idx, batch in enumerate(pbar):
                 input_img = batch["input"].to(self.device)
                 target_img = batch["target"].to(self.device)
-                mask = batch["mask"].to(self.device)  # Shadow mask for region weighting
                 
                 output = model(input_img)
                 
-                # Pass input_img for shadow-aware L1 weighting (2.0x in shadowed regions)
-                losses = loss_fn(output, target_img, input_img=input_img, mask=mask)
+                losses = loss_fn(output, target_img)
                 
                 optimizer.zero_grad()
                 losses["total"].backward()
@@ -417,7 +413,6 @@ class Trainer:
                     for batch_idx, batch in enumerate(val_loader):
                         input_img = batch["input"].to(self.device)
                         target_img = batch["target"].to(self.device)
-                        mask = batch["mask"].to(self.device)  # Shadow mask for region weighting
                         
                         # Phase F: Get debug outputs every 10 epochs for visualization
                         if enable_debug and batch_idx == 0:
@@ -426,8 +421,7 @@ class Trainer:
                             output = model(input_img, return_debug=False)
                             debug_outputs = None
                         
-                        # Pass input_img for shadow-aware L1 weighting (2.0x in shadowed regions)
-                        losses = loss_fn(output, target_img, input_img=input_img, mask=mask)
+                        losses = loss_fn(output, target_img)
                         
                         for k, v in losses.items():
                             val_losses[k] += v.item()

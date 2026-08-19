@@ -10,7 +10,7 @@ Implementation based on Plan.md Phase B, C, D:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Tuple
+from typing import Tuple
 import torchvision.models as models
 
 
@@ -31,24 +31,26 @@ class CoordinateAttention(nn.Module):
     3. Recalibration: Conv to restore channels, Sigmoid, Multiply with input
     """
     
-    def __init__(self, in_channels: int, reduction: int = 4):
+    def __init__(self, in_channels: int, reduction: int = 16):
         """
         Args:
             in_channels: Number of input channels
-            reduction: Channel reduction ratio for bottleneck (default: 4 for complex shadow shapes)
+            reduction: Channel reduction ratio for bottleneck (default: 16, matching
+                the Coordinate Attention source [Hou et al.], which uses r=32 by
+                default and r=16 as a higher-capacity variant)
         """
         super().__init__()
         self.in_channels = in_channels
         self.reduction = reduction
         
         # Intermediate channel count (bottleneck)
-        # Lower reduction (4 vs 16) = higher capacity for wrinkled shadow patterns
-        hidden_channels = max(in_channels, 16)        
+        # Coordinate Attention source: hidden = max(8, C // reduction)
+        hidden_channels = max(8, in_channels // reduction)
 
         # Excitation: Shared convolution for feature interaction
         self.conv1 = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, stride=1, padding=0)
         self.bn1 = nn.BatchNorm2d(hidden_channels)
-        self.act = nn.SiLU(inplace=True)  # Swish activation
+        self.act = nn.Hardswish(inplace=True)  # h-swish activation (Coordinate Attention source)
         
         # Recalibration: Separate convolutions for H and W attention
         self.conv_h = nn.Conv2d(hidden_channels, in_channels, kernel_size=1, stride=1, padding=0)
@@ -297,7 +299,7 @@ class IOANet(nn.Module):
         super().__init__()
         
         # Input Attention (LRA): Coordinate Attention on input (parallel branch)
-        self.input_attention = CoordinateAttention(in_channels=3, reduction=4)
+        self.input_attention = CoordinateAttention(in_channels=3, reduction=16)
         
         # Backbone: MobileNetV2 Encoder + FB-Decoder
         self.encoder = MobileNetV2Encoder(pretrained=pretrained)
@@ -306,7 +308,7 @@ class IOANet(nn.Module):
         # Output Attention (LDRA): Coordinate Attention on the 3-channel residual
         # Paper alignment: I_out = LDRA(R(x)) + LRA(x)
         # LDRA (output attention) operates in image space on the 3-channel residual
-        self.output_attention = CoordinateAttention(in_channels=3, reduction=4)
+        self.output_attention = CoordinateAttention(in_channels=3, reduction=16)
         
         # Phase F: Store intermediate outputs for debugging
         self.debug_outputs = {}
@@ -377,75 +379,4 @@ def get_model_info(model: nn.Module, name: str = "Model") -> str:
     total = count_parameters(model, trainable_only=False)
     trainable = count_parameters(model, trainable_only=True)
     return f"{name}:\n  Total: {total/1e6:.2f}M | Trainable: {trainable/1e6:.2f}M"
-
-
-def compute_gflops(model: nn.Module, input_size: tuple = (1, 3, 192, 256)) -> float:
-    """
-    Compute GFLOPs for the model.
-    
-    Phase F: Mobile Compatibility Check
-    Target: < 1.47 GFLOPs (as per Plan.md)
-    
-    Args:
-        model: The model to analyze
-        input_size: Input tensor size (B, C, H, W)
-    
-    Returns:
-        GFLOPs (Giga Floating Point Operations)
-    """
-    try:
-        from thop import profile
-        import torch
-        
-        model.eval()
-        input_tensor = torch.randn(input_size)
-        
-        # Move to same device as model
-        device = next(model.parameters()).device
-        input_tensor = input_tensor.to(device)
-        
-        flops, params = profile(model, inputs=(input_tensor,), verbose=False)
-        gflops = flops / 1e9
-        
-        return gflops
-    except ImportError:
-        print("[Warning] thop not installed. Cannot compute GFLOPs. Install with: pip install thop")
-        return -1.0
-    except Exception as e:
-        print(f"[Warning] Failed to compute GFLOPs: {e}")
-        return -1.0
-
-
-def validate_model_efficiency(model: nn.Module, target_gflops: float = 1.47) -> Dict[str, bool]:
-    """
-    Phase F: Engineering Sanity Checks
-    
-    Validates:
-    1. Mobile Compatibility: GFLOPs < target
-    2. Parameter Count: Should be low (MobileNetV2 is lightweight)
-    
-    Args:
-        model: The IOANet model
-        target_gflops: Maximum allowed GFLOPs (default: 1.47)
-    
-    Returns:
-        Dictionary with validation results
-    """
-    results = {}
-    
-    # Check parameter count
-    total_params = count_parameters(model, trainable_only=False)
-    results['param_count_ok'] = total_params < 10e6  # Less than 10M parameters
-    results['total_params'] = total_params
-    
-    # Check GFLOPs
-    gflops = compute_gflops(model)
-    if gflops > 0:
-        results['gflops_ok'] = gflops < target_gflops
-        results['gflops'] = gflops
-    else:
-        results['gflops_ok'] = None  # Could not compute
-        results['gflops'] = -1.0
-    
-    return results
 

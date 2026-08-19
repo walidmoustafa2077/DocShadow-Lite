@@ -60,23 +60,19 @@ class ShadowRemovalLoss(nn.Module):
     def forward(
         self,
         output: torch.Tensor,
-        target: torch.Tensor,
-        input_img: torch.Tensor = None,
-        mask: torch.Tensor = None
+        target: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute combined loss with optional shadow-aware weighting.
-        
+        Compute combined loss.
+
         Args:
             output: Predicted shadow-free image (B, 3, H, W) in [0, 1]
             target: Ground truth shadow-free image (B, 3, H, W) in [0, 1]
-            input_img: Optional input shadow image for shadow-aware weighting (B, 3, H, W) in [0, 1]
-            mask: Optional shadow mask (B, 1, H, W) for region weighting
-        
+
         Returns:
             Dictionary with keys:
                 - 'total': Total weighted loss
-                - 'l1': L1 loss value (possibly weighted)
+                - 'l1': L1 loss value
                 - 'lpips': LPIPS loss value
         """
         # =====================================================================
