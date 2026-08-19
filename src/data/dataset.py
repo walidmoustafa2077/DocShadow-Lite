@@ -10,6 +10,39 @@ import cv2
 
 
 # =============================================================================
+# Directory structure detection
+# =============================================================================
+
+def _resolve_data_folder(root_dir: Path, split: str) -> Path:
+    """
+    Resolve the data folder for a given split, handling two layouts:
+    
+    1. Split layout:  root_dir/train/{input,target,mask}, root_dir/test/{...}
+    2. Flat layout:   root_dir/{input,target,mask}  (no train/test split)
+    
+    For the flat layout, all splits (train/val/test) point to the same folder;
+    the train/val split is handled by the dataloader via random_split.
+    """
+    split_folder = "train" if split in ["train", "val"] else "test"
+    split_path = root_dir / split_folder / "input"
+    flat_path = root_dir / "input"
+    
+    if split_path.exists():
+        return root_dir / split_folder
+    elif flat_path.exists():
+        return root_dir
+    else:
+        # Neither exists — fall back to the split path so the caller's
+        # FileNotFoundError message is meaningful.
+        return root_dir / split_folder
+
+
+def _has_test_split(root_dir: Path) -> bool:
+    """Return True if a dedicated test split folder exists (split layout)."""
+    return (root_dir / "test" / "input").exists()
+
+
+# =============================================================================
 # Stage 1: Low-Resolution Dataset (192×256)
 # =============================================================================
 
@@ -33,12 +66,12 @@ class ShadowRemovalDataset(Dataset):
         self.shadow_color_shift = shadow_color_shift
         self.rotation_range = rotation_range
         
-        # Determine data folder
-        data_folder = "train" if split in ["train", "val"] else "test"
+        # Determine data folder (handles both split and flat layouts)
+        data_folder = _resolve_data_folder(self.root_dir, split)
         
-        self.input_dir = self.root_dir / data_folder / "input"
-        self.target_dir = self.root_dir / data_folder / "target"
-        self.mask_dir = self.root_dir / data_folder / "mask"
+        self.input_dir = data_folder / "input"
+        self.target_dir = data_folder / "target"
+        self.mask_dir = data_folder / "mask"
         
         # Validate directories exist
         if not self.input_dir.exists():
@@ -296,7 +329,7 @@ def create_dataloaders(
     input_resolution: Tuple[int, int] = (192, 256),
     batch_size: int = 16,
     num_workers: int = 0,
-    val_split: float = 0.08,
+    val_split: float = 0.1,
     augment: bool = True,
     **kwargs
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
@@ -313,7 +346,7 @@ def create_dataloaders(
         input_resolution: Target resolution [W, H]
         batch_size: Batch size for all loaders (default: 16)
         num_workers: Number of data loading workers
-        val_split: Validation split ratio (default: 0.08 = 8%)
+        val_split: Validation split ratio (default: 0.1 = 10%)
         augment: Enable augmentation for training
     
     Returns:
@@ -347,14 +380,17 @@ def create_dataloaders(
     if hasattr(val_dataset.dataset, 'augment'):
         val_dataset.dataset.augment = False
     
-    # Create test dataset
-    test_dataset = ShadowRemovalDataset(
-        root_dir=root_dir,
-        split="test",
-        input_resolution=input_resolution,
-        augment=False,
-        **kwargs
-    )
+    # Create test dataset (only if a dedicated test split exists)
+    if _has_test_split(Path(root_dir)):
+        test_dataset = ShadowRemovalDataset(
+            root_dir=root_dir,
+            split="test",
+            input_resolution=input_resolution,
+            augment=False,
+            **kwargs
+        )
+    else:
+        test_dataset = None
     
     # Create dataloaders with optimized settings for large datasets
     # persistent_workers: Keeps workers alive between epochs (critical for Windows)
@@ -390,9 +426,9 @@ def create_dataloaders(
         pin_memory=True,
         persistent_workers=use_persistent,
         prefetch_factor=2 if num_workers > 0 else None
-    )
+    ) if test_dataset is not None else None
     
-    print(f"[DataLoader] Train: {train_size}, Val: {val_size}, Test: {len(test_dataset)}")
+    print(f"[DataLoader] Train: {train_size}, Val: {val_size}, Test: {len(test_dataset) if test_dataset is not None else 0}")
     
     return train_loader, val_loader, test_loader
 
@@ -449,12 +485,12 @@ class HighResolutionDataset(Dataset):
         self.shadow_color_shift = shadow_color_shift
         self.rotation_range = rotation_range
         
-        # Determine data folder
-        data_folder = "train" if split in ["train", "val"] else "test"
+        # Determine data folder (handles both split and flat layouts)
+        data_folder = _resolve_data_folder(self.root_dir, split)
         
-        self.input_dir = self.root_dir / data_folder / "input"
-        self.target_dir = self.root_dir / data_folder / "target"
-        self.mask_dir = self.root_dir / data_folder / "mask"
+        self.input_dir = data_folder / "input"
+        self.target_dir = data_folder / "target"
+        self.mask_dir = data_folder / "mask"
         
         # Validate directories exist
         if not self.input_dir.exists():
@@ -663,14 +699,17 @@ def create_stage2_dataloaders(
     if hasattr(val_dataset.dataset, 'augment'):
         val_dataset.dataset.augment = False
     
-    # Create test dataset
-    test_dataset = HighResolutionDataset(
-        root_dir=root_dir,
-        split="test",
-        input_resolution=input_resolution,
-        augment=False,
-        **kwargs
-    )
+    # Create test dataset (only if a dedicated test split exists)
+    if _has_test_split(Path(root_dir)):
+        test_dataset = HighResolutionDataset(
+            root_dir=root_dir,
+            split="test",
+            input_resolution=input_resolution,
+            augment=False,
+            **kwargs
+        )
+    else:
+        test_dataset = None
     
     # Create dataloaders
     use_persistent = num_workers > 0
@@ -704,9 +743,9 @@ def create_stage2_dataloaders(
         pin_memory=True,
         persistent_workers=use_persistent,
         prefetch_factor=2 if num_workers > 0 else None
-    )
+    ) if test_dataset is not None else None
     
-    print(f"[Stage 2 DataLoader] Train: {train_size}, Val: {val_size}, Test: {len(test_dataset)}")
+    print(f"[Stage 2 DataLoader] Train: {train_size}, Val: {val_size}, Test: {len(test_dataset) if test_dataset is not None else 0}")
     print(f"[Stage 2 DataLoader] Resolution: {input_resolution[0]}×{input_resolution[1]} (W×H)")
     print(f"[Stage 2 DataLoader] Batch Size: {batch_size}")
     

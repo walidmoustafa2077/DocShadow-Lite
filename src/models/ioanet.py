@@ -110,42 +110,6 @@ class CoordinateAttention(nn.Module):
 # Phase C: IOANet Backbone (MobileNetV2 Encoder + FB-Decoder)
 # =============================================================================
 
-class InvertedResidual(nn.Module):
-    """Inverted Residual Block (MobileNetV2 building block)"""
-    
-    def __init__(self, in_channels: int, out_channels: int, stride: int, expand_ratio: int):
-        super().__init__()
-        self.stride = stride
-        hidden_dim = int(in_channels * expand_ratio)
-        self.use_res_connect = self.stride == 1 and in_channels == out_channels
-        
-        layers = []
-        if expand_ratio != 1:
-            # Pointwise expansion
-            layers.extend([
-                nn.Conv2d(in_channels, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            ])
-        
-        # Depthwise convolution
-        layers.extend([
-            nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU6(inplace=True),
-            # Pointwise linear projection
-            nn.Conv2d(hidden_dim, out_channels, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(out_channels),
-        ])
-        
-        self.conv = nn.Sequential(*layers)
-    
-    def forward(self, x):
-        if self.use_res_connect:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
-
 class MobileNetV2Encoder(nn.Module):
     """MobileNetV2-based Encoder (Ref [11])"""
     
@@ -293,8 +257,7 @@ class IOANet(nn.Module):
         self, 
         in_channels: int = 3, 
         out_channels: int = 3,
-        pretrained: bool = True,
-        width_mult: float = 1.0
+        pretrained: bool = True
     ):
         super().__init__()
         

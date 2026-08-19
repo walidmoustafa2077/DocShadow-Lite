@@ -197,7 +197,7 @@ model:
   stage2:
     base_channels: 16
     num_levels: 3
-    refine_blocks: 2
+    refine_blocks: 3
 
 training:
   stage1:

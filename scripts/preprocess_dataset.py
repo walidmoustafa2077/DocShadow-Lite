@@ -56,13 +56,28 @@ def resize_and_save(source_dir, dest_dir, target_size, quality=95):
     total_processed = 0
     total_failed = 0
     
-    for split in ["train", "test"]:
+    # Detect structure: split (train/test) vs flat (input/mask/target directly)
+    has_splits = (src_path / "train").exists() or (src_path / "test").exists()
+    if has_splits:
+        splits = ["train", "test"]
+        print(f"[OK] Detected split structure (train/test)")
+    else:
+        splits = [None]
+        print(f"[OK] Detected flat structure (no train/test split)")
+    
+    for split in splits:
         for type_dir in ["input", "target", "mask"]:
-            current_src = src_path / split / type_dir
-            current_dest = dest_path / split / type_dir
+            if split is not None:
+                current_src = src_path / split / type_dir
+                current_dest = dest_path / split / type_dir
+                desc = f"{split}/{type_dir}"
+            else:
+                current_src = src_path / type_dir
+                current_dest = dest_path / type_dir
+                desc = type_dir
             
             if not current_src.exists():
-                print(f"[SKIP] {split}/{type_dir} not found")
+                print(f"[SKIP] {desc} not found")
                 continue
             
             current_dest.mkdir(parents=True, exist_ok=True)
@@ -73,17 +88,17 @@ def resize_and_save(source_dir, dest_dir, target_size, quality=95):
                 files.extend(list(current_src.glob(ext)))
             
             if not files:
-                print(f"[SKIP] {split}/{type_dir} - no images found")
+                print(f"[SKIP] {desc} - no images found")
                 continue
             
-            print(f"[Processing] {split}/{type_dir} - {len(files)} images")
+            print(f"[Processing] {desc} - {len(files)} images")
             
             tasks = [(f, current_dest, target_size_cv, quality, type_dir) for f in files]
             
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(process_single_image, task): task for task in tasks}
                 
-                with tqdm(total=len(files), desc=f"{split}/{type_dir}") as pbar:
+                with tqdm(total=len(files), desc=desc) as pbar:
                     for future in as_completed(futures):
                         success, error_msg = future.result()
                         if success:
