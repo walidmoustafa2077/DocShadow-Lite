@@ -54,16 +54,15 @@ model:
   # Plan.md Phase 5: LPTN-Lite Refinement Architecture
   stage2:
     # Depthwise separable convolutions - reduce complexity from 22.8 to 1.47 GFLOPs
-    base_channels: 16          # CRITICAL FIX: Reduced from 64 to 16 channels. At 768x1024, 64 channels = 11.5 GFLOPs. 16 channels = ~1.35-1.4 GFLOPs (pointwise ops drop by 16x since 64^2/16^2 = 16)
+    base_channels: 16          # Paper (LP-IOANet): width decreased to 16 channels to hit 1.47 GFLOPs
     num_levels: 3              # Laplacian pyramid levels: Level 0 (768×1024), Level 1 (384×512), Level 2 (192×256 - frozen IOANet)
-    refine_blocks: 2           # Number of depthwise separable blocks per refinement network (Num Blocks=2)
+    refine_blocks: 3           # Paper (LPTN): 3 residual blocks at the bottleneck level (384×512)
     
     # Pyramid decomposition (from Plan.md Phase 1)
-    # Paper alignment (arXiv 2303.12862): "The residual refinement network
-    # operates on the intermediate resolution of (384×512)."
+    # Paper alignment (LPTN / LP-IOANet): progressive multi-level refinement.
     # Level 2 (Low):  192×256 (downsampled by 4x, fed to frozen IOANet)
-    # Level 1 (Mid):  384×512 (refined with the single RefinementBlock)
-    # Level 0 (High): 768×1024 (residual passed through unchanged, no refinement)
+    # Level 1 (Mid):  384×512 (3 residual blocks -> mask M_1)
+    # Level 0 (High): 768×1024 (upsample M_1 x2 + 2-conv finetune -> mask M_0)
 
 # Training configuration
 training:
@@ -109,7 +108,7 @@ training:
       l1_weight: 1.0    # L1 loss only (no LPIPS for Stage 2)
     
     checkpoint_interval: 10  # Save checkpoint every 10 epochs
-    validation_interval: 2   # Validate frequently (200 epochs total)
+    validation_interval: 5   # Validate frequently (200 epochs total)
     
     # Plan.md Phase 6: Memory Management
     # Use torch.no_grad() for frozen IOANet during forward pass

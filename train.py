@@ -649,9 +649,9 @@ class Stage2Trainer:
         
         model = LPIOANet(
             ioanet_model=ioanet,
-            base_channels=stage2_config.get("base_channels", 32),
+            base_channels=stage2_config.get("base_channels", 16),
             num_levels=stage2_config.get("num_levels", 3),
-            refine_blocks=stage2_config.get("refine_blocks", 2)
+            refine_blocks=stage2_config.get("refine_blocks", 3)
         )
         
         model = model.to(self.device)

@@ -168,6 +168,45 @@ class RefinementBlock(nn.Module):
 
 
 # =============================================================================
+# Mask Finetune Block (Progressive Refinement)
+# =============================================================================
+
+class MaskFinetuneBlock(nn.Module):
+    """
+    Lightweight mask finetune block for progressive refinement.
+    
+    Paper (LPTN, Liang et al.): "At each level from l = L-2 to l = 0, we first
+    upsample the mask of the last level and then learn a lightweight convolution
+    to slightly finetune the mask."
+    
+    This block takes the upsampled mask from the previous (lower-resolution)
+    level and applies 2 lightweight convolutional layers to finetune it for the
+    current (higher-resolution) level.
+    
+    Architecture: [Conv 1→C 3×3] → LeakyReLU → [Conv C→1 1×1] → Sigmoid
+    """
+    
+    def __init__(self, base_channels: int = 16):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, base_channels, kernel_size=3, stride=1, padding=1)
+        self.act = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        self.conv2 = nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0)
+        self.sigmoid = nn.Sigmoid()
+    
+    def forward(self, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            mask: Upsampled mask from previous level (B, 1, H, W) in [0, 1]
+        Returns:
+            Finetuned mask (B, 1, H, W) in [0, 1]
+        """
+        x = self.conv1(mask)
+        x = self.act(x)
+        x = self.conv2(x)
+        return self.sigmoid(x)
+
+
+# =============================================================================
 # Laplacian Pyramid Decomposition & Recomposition
 # =============================================================================
 
@@ -251,37 +290,38 @@ class LaplacianRefiner(nn.Module):
     Takes the low-resolution output from frozen IOANet and uses it to guide
     high-resolution refinement via Laplacian pyramid decomposition.
     
-    Architecture:
+    Architecture (paper alignment, LPTN / LP-IOANet):
     1. Decompose high-res input into Laplacian pyramid (3 levels)
-    2. Refine the intermediate level (384×512) with a RefinementBlock:
+    2. Bottleneck level (384×512): 3 residual blocks predict mask M_1
        - Concatenate residual with upsampled lower-res output
-       - Pass through RefinementBlock to predict mask
-       - Apply mask to residual: L'_1 = L_1 ⊙ M_1
-    3. Reconstruct the high-res output by adding the high-res residual L_0
-       UNCHANGED (no mask applied): I_out = clamp(Upsample(I'_1) + L_0, 0, 1)
+       - Apply mask: L'_1 = L_1 ⊙ M_1
+    3. Progressive refinement to high-res (768×1024):
+       - Upsample M_1 ×2 (bilinear) and finetune with 2 lightweight conv layers → M_0
+       - Apply mask: L'_0 = L_0 ⊙ M_0
+    4. Reconstruct: I_out = clamp(Upsample(I'_1) + L'_0, 0, 1)
     
-    Paper alignment (arXiv 2303.12862): "The residual refinement network
-    operates on the intermediate resolution of (384×512)." The convolutional
-    refinement network lives ONLY at 384×512 (to save GFLOPs). The high-res
-    residual L_0 is added unchanged to preserve high-frequency text detail.
+    Paper (LPTN, Liang et al.): "At each level from l = L-2 to l = 0, we first
+    upsample the mask of the last level and then learn a lightweight convolution
+    to slightly finetune the mask." The mask is applied multiplicatively to every
+    high-frequency component, including L_0.
     
     Flow for 768×1024 input:
     - Level 2 (Low): 192×256 (fed to frozen IOANet)
-    - Level 1 (Mid): 384×512 (refine with RefinementBlock → mask M_1)
-    - Level 0 (High): 768×1024 (residual L_0 added unchanged, no mask)
+    - Level 1 (Mid): 384×512 (3 residual blocks → mask M_1)
+    - Level 0 (High): 768×1024 (upsample M_1 + finetune → mask M_0)
     """
     
     def __init__(
         self,
-        base_channels: int = 32,
+        base_channels: int = 16,
         num_levels: int = 3,
-        refine_blocks: int = 2
+        refine_blocks: int = 3
     ):
         """
         Args:
-            base_channels: Base channel count for refinement blocks (budget: 32 or 16)
+            base_channels: Base channel count for refinement blocks (paper: 16)
             num_levels: Number of pyramid levels (typically 3)
-            refine_blocks: Number of depthwise separable blocks per refinement network
+            refine_blocks: Number of residual blocks at the bottleneck level (paper: 3)
         """
         super().__init__()
         
@@ -289,9 +329,7 @@ class LaplacianRefiner(nn.Module):
         self.num_levels = num_levels
         self.decomposer = LaplacianDecomposer()
         
-        # Paper alignment: the residual refinement network operates ONLY at the
-        # intermediate resolution (384×512). So we create exactly ONE refinement
-        # block (for the intermediate level), not one per level.
+        # Bottleneck level (384×512): 3 residual blocks predict the mask M_1
         self.refine_blocks = nn.ModuleList([
             RefinementBlock(
                 in_channels=6,
@@ -299,6 +337,9 @@ class LaplacianRefiner(nn.Module):
                 num_blocks=refine_blocks
             )
         ])
+        
+        # Progressive mask finetune for the high-res level (768×1024)
+        self.mask_finetune = MaskFinetuneBlock(base_channels=base_channels)
     
     def forward(
         self,
@@ -322,22 +363,12 @@ class LaplacianRefiner(nn.Module):
         residuals = pyramid['residuals']  # [L_0, L_1, L_2]
         
         # =====================================================================
-        # Step 2: Refine residuals using frozen IOANet output
+        # Step 2: Bottleneck refinement (Level 1, 384×512)
         # =====================================================================
-        # Paper alignment: the residual refinement network operates ONLY at the
-        # intermediate resolution (384×512). The high-res level (768×1024)
-        # residual is passed through unchanged.
-        #
-        # Pyramid levels (for 768×1024 input):
-        #   Level 2 (Low):  192×256  -> IOANet output (I'_2)
-        #   Level 1 (Mid):  384×512  -> refined with RefinementBlock (I'_1)
-        #   Level 0 (High): 768×1024 -> residual passed through unchanged (I'_0)
-        
         # Start from IOANet's low-res output (lowest level, unchanged)
         current_reconstruction = low_res_output  # I'_2 at 192×256
         
-        # Refine the intermediate level (Level 1, 384×512)
-        mid_level = self.num_levels - 2  # index of the intermediate level
+        mid_level = self.num_levels - 2  # index of the intermediate level (1)
         
         # Upsample previous reconstruction to match the intermediate level
         upsampled_guidance = F.interpolate(
@@ -347,40 +378,42 @@ class LaplacianRefiner(nn.Module):
         )
         
         # Concatenate residual and upsampled guidance
-        # Input to refiner: (B, 6, H_i, W_i)
         concat_input = torch.cat(
             [residuals[mid_level], upsampled_guidance],
             dim=1
         )
         
-        # Predict mask for the intermediate level using RefinementBlock
-        # mask is in [0, 1] (sigmoid output)
-        mask = self.refine_blocks[0](concat_input)  # (B, 1, H_i, W_i)
+        # Predict mask for the intermediate level (3 residual blocks)
+        mask_mid = self.refine_blocks[0](concat_input)  # M_1 at 384×512
         
         # Apply mask to residual (element-wise multiplication)
-        refined_mid_residual = residuals[mid_level] * mask
+        refined_mid_residual = residuals[mid_level] * mask_mid
         
         # Reconstruct the intermediate level
         mid_reconstruction = upsampled_guidance + refined_mid_residual  # I'_1 at 384×512
         
         # =====================================================================
-        # Step 3: Recompose to high-res output
+        # Step 3: Progressive refinement to high-res (Level 0, 768×1024)
         # =====================================================================
-        # Paper alignment (arXiv 2303.12862): the residual refinement network
-        # operates ONLY at the intermediate resolution (384×512). The high-res
-        # level (768×1024) residual L_0 is added UNCHANGED (no mask applied).
-        #
-        #   I_out = clamp(Upsample(I'_1) + L_0, 0, 1)
-        #
-        # This preserves the high-frequency text detail that would otherwise be
-        # gated out by a mask. Applying a mask to L_0 (as a previous version did)
-        # destroys text edges and drops PSNR below Stage 1.
+        # Paper: upsample the mask ×2 (bilinear) and finetune with 2 conv layers
+        mask_high = F.interpolate(
+            mask_mid,
+            size=residuals[0].shape[-2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        mask_high = self.mask_finetune(mask_high)  # M_0 at 768×1024
+        
+        # Apply mask to the high-res residual L_0
+        refined_high_residual = residuals[0] * mask_high
+        
+        # Reconstruct the high-res output
         upsampled_high = F.interpolate(
             mid_reconstruction,
             size=residuals[0].shape[-2:],
             mode='nearest'
         )
-        output = upsampled_high + residuals[0]  # I'_0 = Upsample(I'_1) + L_0 (L_0 unchanged)
+        output = upsampled_high + refined_high_residual  # I'_0 = Upsample(I'_1) + L'_0
         
         # Clamp output to valid image range [0, 1] (paper: clamp(..., 0, 1))
         output = torch.clamp(output, 0.0, 1.0)
@@ -410,16 +443,16 @@ class LPIOANet(nn.Module):
     def __init__(
         self,
         ioanet_model: nn.Module,
-        base_channels: int = 32,
+        base_channels: int = 16,
         num_levels: int = 3,
-        refine_blocks: int = 2
+        refine_blocks: int = 3
     ):
         """
         Args:
             ioanet_model: Trained IOANet module (will be frozen)
-            base_channels: Base channel count for refinement blocks
+            base_channels: Base channel count for refinement blocks (paper: 16)
             num_levels: Number of pyramid levels
-            refine_blocks: Number of depthwise separable blocks per refinement network
+            refine_blocks: Number of residual blocks at the bottleneck level (paper: 3)
         """
         super().__init__()
         
