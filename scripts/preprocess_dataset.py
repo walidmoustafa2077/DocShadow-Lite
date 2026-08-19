@@ -18,7 +18,9 @@ def process_single_image(args):
         img_resized = cv2.resize(img, target_size_cv, interpolation=cv2.INTER_LINEAR)
         
         save_path = current_dest / f.name
-        if type_dir == "mask":
+        # Only pass JPEG quality for JPEG outputs; PNG/BMP encoders don't
+        # understand IMWRITE_JPEG_QUALITY and would emit "unsupported key" warnings.
+        if type_dir == "mask" or save_path.suffix.lower() in [".png", ".bmp"]:
             cv2.imwrite(str(save_path), img_resized)
         else:
             cv2.imwrite(str(save_path), img_resized, [cv2.IMWRITE_JPEG_QUALITY, quality])
