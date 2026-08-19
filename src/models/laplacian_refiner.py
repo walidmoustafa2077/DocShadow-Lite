@@ -138,14 +138,10 @@ class RefinementBlock(nn.Module):
         ])
         
         # Output projection to 1 channel (mask)
-        # Paper alignment (LPTN Figure 2): Tanh activation, values in [-1, 1].
-        # Tanh allows the mask to both suppress AND amplify high-frequency
-        # content (e.g. boost dimmed text edges), unlike sigmoid which can only
-        # attenuate. This is the key to breaking the PSNR plateau.
-        self.proj_out = nn.Sequential(
-            nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0),
-            nn.Tanh()
-        )
+        # Paper alignment: the mask network's final layer has 1 output channel
+        # and NO activation function (LPTN: "the output channel of the last
+        # convolution layers is set to 1"). The mask is applied as h ⊗ M.
+        self.proj_out = nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -164,7 +160,7 @@ class RefinementBlock(nn.Module):
         for block in self.blocks:
             x = block(x) + x  # Residual connection
         
-        # Project to mask (single channel, tanh in [-1,1])
+        # Project to mask (single channel, no activation - paper alignment)
         mask = self.proj_out(x)
         
         return mask
@@ -186,7 +182,7 @@ class MaskFinetuneBlock(nn.Module):
     level and applies 2 lightweight convolutional layers to finetune it for the
     current (higher-resolution) level.
     
-    Architecture: [Conv 1→C 3×3] → LeakyReLU → [Conv C→1 1×1] → Tanh
+    Architecture: [Conv 1→C 3×3] → LeakyReLU → [Conv C→1 1×1] (no activation)
     """
     
     def __init__(self, base_channels: int = 16):
@@ -194,19 +190,18 @@ class MaskFinetuneBlock(nn.Module):
         self.conv1 = nn.Conv2d(1, base_channels, kernel_size=3, stride=1, padding=1)
         self.act = nn.LeakyReLU(negative_slope=0.1, inplace=True)
         self.conv2 = nn.Conv2d(base_channels, 1, kernel_size=1, stride=1, padding=0)
-        self.tanh = nn.Tanh()
     
     def forward(self, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            mask: Upsampled mask from previous level (B, 1, H, W) in [-1, 1]
+            mask: Upsampled mask from previous level (B, 1, H, W)
         Returns:
-            Finetuned mask (B, 1, H, W) in [-1, 1]
+            Finetuned mask (B, 1, H, W) (no activation - paper alignment)
         """
         x = self.conv1(mask)
         x = self.act(x)
         x = self.conv2(x)
-        return self.tanh(x)
+        return x
 
 
 # =============================================================================
