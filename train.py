@@ -40,13 +40,14 @@ class Trainer:
     
     def __init__(self, config_path: str, debug: bool = True, stage: int = 1, 
                  resume_checkpoint: str = None, finetune: bool = False,
-                 mixed: bool = False):
+                 mixed: bool = False, lr: float = None):
         self.debug = debug
         self.config_path = config_path
         self.stage = stage
         self.resume_checkpoint = resume_checkpoint
         self.finetune = finetune
         self.mixed = mixed
+        self.lr = lr
         
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -351,6 +352,13 @@ class Trainer:
         
         # Load checkpoint if resuming
         start_epoch = self._load_checkpoint_with_mode(model, optimizer, scheduler)
+        
+        # Optional LR override: applied AFTER checkpoint load so it wins over the
+        # restored optimizer state (useful for low-LR fine-tuning, e.g. --lr 0.00005).
+        if self.lr is not None:
+            for g in optimizer.param_groups:
+                g["lr"] = self.lr
+            print(f"[OK] LR override: {self.lr} (applied after checkpoint load)")
         
         loss_fn = ShadowRemovalLoss(
             l1_weight=config["losses"]["l1_weight"],
@@ -1013,13 +1021,14 @@ def main():
     parser.add_argument("--finetune", action="store_true", default=False, help="Fine-tune from checkpoint (Stage 1 only)")
     parser.add_argument("--stage1-checkpoint", type=str, default=None, help="Override Stage 1 checkpoint path (uses config if not provided)")
     parser.add_argument("--mixed", action="store_true", default=False, help="Use mixed-dataset training (Stage 1 only)")
+    parser.add_argument("--lr", type=float, default=None, help="Override learning rate (applied after checkpoint load; useful for low-LR fine-tuning)")
     
     args = parser.parse_args()
     
     if args.stage == 1:
         trainer = Trainer(args.config, debug=args.debug, stage=args.stage, 
                          resume_checkpoint=args.resume, finetune=args.finetune,
-                         mixed=args.mixed)
+                         mixed=args.mixed, lr=args.lr)
         trainer.train()
     elif args.stage == 2:
         trainer = Stage2Trainer(
