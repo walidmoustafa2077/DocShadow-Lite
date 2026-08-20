@@ -16,6 +16,7 @@ import cv2
 from src.models.ioanet import IOANet, get_model_info
 from src.models.laplacian_refiner import LPIOANet, count_parameters
 from src.data.dataset import create_dataloaders, create_stage2_dataloaders
+from src.data.mixed_dataset import create_mixed_dataloaders
 from src.utils.losses import ShadowRemovalLoss, MetricsCalculator
 
 
@@ -38,12 +39,14 @@ class Trainer:
     """Stage 1 IOANet Trainer (192×256 resolution)."""
     
     def __init__(self, config_path: str, debug: bool = True, stage: int = 1, 
-                 resume_checkpoint: str = None, finetune: bool = False):
+                 resume_checkpoint: str = None, finetune: bool = False,
+                 mixed: bool = False):
         self.debug = debug
         self.config_path = config_path
         self.stage = stage
         self.resume_checkpoint = resume_checkpoint
         self.finetune = finetune
+        self.mixed = mixed
         
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -311,16 +314,33 @@ class Trainer:
         
         resolution = tuple(self.config["data"]["input_resolution"])
         aug_cfg = self.config["data"].get("augmentation", {})
-        train_loader, val_loader, test_loader = create_dataloaders(
-            root_dir=self.config["dataset"]["root_dir"],
-            input_resolution=resolution,
-            batch_size=config["batch_size"],
-            num_workers=self.config["dataset"]["num_workers"],
-            augment=True,
-            illumination_strength=aug_cfg.get("illumination_strength", 0.1),
-            shadow_color_shift=aug_cfg.get("shadow_color_shift", 0.05),
-            rotation_range=aug_cfg.get("rotation_range", 5.0),
-        )
+        
+        if self.mixed:
+            mixed_cfg = self.config["dataset"].get("mixed", {})
+            train_loader, val_loader = create_mixed_dataloaders(
+                root_dir=mixed_cfg.get("root_dir", "Data/Mixed_Stage1"),
+                input_resolution=resolution,
+                batch_size=mixed_cfg.get("batch_size", 16),
+                num_workers=self.config["dataset"]["num_workers"],
+                val_split=mixed_cfg.get("val_split", 0.1),
+                ratios=mixed_cfg.get("ratios"),
+                augment=True,
+                illumination_strength=aug_cfg.get("illumination_strength", 0.1),
+                shadow_color_shift=aug_cfg.get("shadow_color_shift", 0.05),
+                rotation_range=aug_cfg.get("rotation_range", 0.0),
+            )
+            test_loader = None
+        else:
+            train_loader, val_loader, test_loader = create_dataloaders(
+                root_dir=self.config["dataset"]["root_dir"],
+                input_resolution=resolution,
+                batch_size=config["batch_size"],
+                num_workers=self.config["dataset"]["num_workers"],
+                augment=True,
+                illumination_strength=aug_cfg.get("illumination_strength", 0.1),
+                shadow_color_shift=aug_cfg.get("shadow_color_shift", 0.05),
+                rotation_range=aug_cfg.get("rotation_range", 5.0),
+            )
         
         model = self._create_model()
         
@@ -992,12 +1012,14 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Resume training from checkpoint")
     parser.add_argument("--finetune", action="store_true", default=False, help="Fine-tune from checkpoint (Stage 1 only)")
     parser.add_argument("--stage1-checkpoint", type=str, default=None, help="Override Stage 1 checkpoint path (uses config if not provided)")
+    parser.add_argument("--mixed", action="store_true", default=False, help="Use mixed-dataset training (Stage 1 only)")
     
     args = parser.parse_args()
     
     if args.stage == 1:
         trainer = Trainer(args.config, debug=args.debug, stage=args.stage, 
-                         resume_checkpoint=args.resume, finetune=args.finetune)
+                         resume_checkpoint=args.resume, finetune=args.finetune,
+                         mixed=args.mixed)
         trainer.train()
     elif args.stage == 2:
         trainer = Stage2Trainer(

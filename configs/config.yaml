@@ -14,6 +14,21 @@ dataset:
   prefetch_factor: 2      # Preload 2 batches per worker (reduces CPU idle)
   pin_memory: true        # CRITICAL: speeds up CPU->GPU transfer
   persistent_workers: true # CRITICAL: keeps workers alive between epochs
+
+  # Mixed-dataset training (Stage 1 only). Used when train.py is run with --mixed.
+  # The merged folder is produced offline by scripts/mixed_dataset.py, so training
+  # does no resize/merge work (no CPU load during training).
+  mixed:
+    enabled: false
+    root_dir: "Data/Mixed_Stage1"   # Merged flat folder {input,target,mask}
+    batch_size: 16                  # Must equal the sum of ratios below
+    val_split: 0.1                  # Carve 10% val from each dataset
+    # Per-batch composition (sums to 16). A-OSR is the ONLY augmented dataset.
+    ratios:
+      FSDSRD: 5
+      RDD: 4
+      SD7K: 5
+      AOSR: 2
   
 # Data dimensions and preprocessing
 data:
