@@ -61,10 +61,14 @@ def process_single_image(args):
         return False, f"{f.name}: {e}"
 
 
-def merge_dataset(source_dir, dest_dir, tag, target_size, quality=95):
+def merge_dataset(source_dir, dest_dir, tag, target_size, quality=95, fraction=1.0):
     """
     Resize one dataset's {input,target,mask} into the merged dest folder,
     prefixing filenames with `tag_` so input/target/mask stay aligned.
+
+    fraction: Fraction of the dataset to process (0.0 < fraction <= 1.0).
+              A deterministic subset is sampled (sorted order, evenly spaced)
+              so input/target/mask stay aligned across the three folders.
     """
     src_path = Path(source_dir)
     dest_path = Path(dest_dir)
@@ -99,6 +103,17 @@ def merge_dataset(source_dir, dest_dir, tag, target_size, quality=95):
             print(f"[SKIP] {desc} - no images found")
             continue
 
+        # Sample a deterministic subset if fraction < 1.0.
+        # Sorted order + evenly-spaced indices keeps input/target/mask aligned
+        # (same filenames selected across all three folders).
+        if fraction < 1.0:
+            files = sorted(files)
+            n_keep = max(1, int(round(len(files) * fraction)))
+            if n_keep < len(files):
+                step = len(files) / n_keep
+                indices = [int(i * step) for i in range(n_keep)]
+                files = [files[i] for i in indices]
+
         # Prefix filenames with the dataset tag so input/target/mask stay aligned
         # AND the training dataset can identify A-OSR samples by prefix.
         tasks = []
@@ -106,7 +121,7 @@ def merge_dataset(source_dir, dest_dir, tag, target_size, quality=95):
             prefixed_name = f"{tag}_{f.name}"
             tasks.append((f, current_dest, target_size_cv, quality, type_dir, prefixed_name))
 
-        print(f"[Processing] {desc} - {len(files)} images")
+        print(f"[Processing] {desc} - {len(files)} images (fraction={fraction})")
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_process_prefixed, task): task for task in tasks}
@@ -161,8 +176,18 @@ def main():
                         help="Path to config file (for default size)")
     parser.add_argument("--quality", type=int, default=95,
                         help="JPEG quality (1-100, default: 95)")
+    parser.add_argument("--fraction", type=float, default=1.0,
+                        help="Fraction of each dataset to process (0.0 < fraction <= 1.0, "
+                             "e.g. 0.5 for half, 0.25 for a quarter). Default: 1.0 (all)")
 
     args = parser.parse_args()
+
+    # Validate fraction
+    if not (0.0 < args.fraction <= 1.0):
+        parser.error("--fraction must be in the range (0.0, 1.0]")
+
+    if args.fraction < 1.0:
+        print(f"[OK] Processing {args.fraction:.0%} of each dataset (subset mode)")
 
     # Parse TAG=PATH pairs
     sources = {}
@@ -204,7 +229,7 @@ def main():
     total_processed = 0
     total_failed = 0
     for tag, path in sources.items():
-        processed, failed = merge_dataset(path, args.dest, tag, target_size, args.quality)
+        processed, failed = merge_dataset(path, args.dest, tag, target_size, args.quality, args.fraction)
         total_processed += processed
         total_failed += failed
 
