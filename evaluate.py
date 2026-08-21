@@ -10,37 +10,87 @@ import yaml
 from tqdm import tqdm
 
 from src.models.ioanet import IOANet
-from src.data.dataset import ShadowRemovalDataset
+from src.models.laplacian_refiner import LPIOANet
+from src.data.dataset import ShadowRemovalDataset, HighResolutionDataset
 from torch.utils.data import DataLoader
 from src.utils.losses import MetricsCalculator, RegionBasedMetrics
 
 
-def load_model(checkpoint_path: str, config_path: str, device: str = "cuda"):
+def load_model(checkpoint_path: str, config_path: str, device: str = "cuda", stage: int = 1):
     """
-    Load trained IOANet model from checkpoint.
-    
+    Load trained model from checkpoint.
+
     Args:
         checkpoint_path: Path to model checkpoint
         config_path: Path to config file
         device: Target device
-    
+        stage: 1 for IOANet, 2 for LPIOANet
+
     Returns:
         Tuple of (model, config)
     """
-    
+
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-    
-    # Load IOANet
+
+    if stage == 2:
+        # Load Stage 1 IOANet (frozen) + Stage 2 LPIOANet
+        stage1_config = config["model"]["stage1"]
+        stage2_config = config["model"]["stage2"]
+
+        ioanet = IOANet(
+            in_channels=stage1_config["input_channels"],
+            out_channels=stage1_config["output_channels"],
+            pretrained=False
+        )
+
+        # Load Stage 1 checkpoint (needed to build the frozen IOANet inside LPIOANet)
+        stage1_ckpt = config["model"]["stage1"].get("checkpoint")
+        if not stage1_ckpt or not Path(stage1_ckpt).exists():
+            raise FileNotFoundError(
+                f"Stage 1 checkpoint not found: {stage1_ckpt}. "
+                f"Stage 2 evaluation requires the Stage 1 model to build LPIOANet."
+            )
+        ckpt1 = torch.load(stage1_ckpt, map_location=device, weights_only=False)
+        if isinstance(ckpt1, dict) and 'model_state_dict' in ckpt1:
+            ioanet.load_state_dict(ckpt1['model_state_dict'])
+        elif isinstance(ckpt1, dict) and 'state_dict' in ckpt1:
+            ioanet.load_state_dict(ckpt1['state_dict'])
+        else:
+            ioanet.load_state_dict(ckpt1)
+        ioanet = ioanet.to(device)
+        ioanet.eval()
+
+        model = LPIOANet(
+            ioanet_model=ioanet,
+            base_channels=stage2_config.get("base_channels", 16),
+            num_levels=stage2_config.get("num_levels", 3),
+            refine_blocks=stage2_config.get("refine_blocks", 3)
+        )
+
+        # Load Stage 2 checkpoint (the refiner weights)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+        model = model.to(device)
+        model.eval()
+
+        return model, config
+
+    # Stage 1: IOANet
     stage1_config = config["model"]["stage1"]
-    
+
     model = IOANet(
         in_channels=stage1_config["input_channels"],
         out_channels=stage1_config["output_channels"],
         pretrained=False
     )
-    
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -49,7 +99,7 @@ def load_model(checkpoint_path: str, config_path: str, device: str = "cuda"):
         model.load_state_dict(checkpoint)
     model = model.to(device)
     model.eval()
-    
+
     return model, config
 
 
@@ -111,6 +161,8 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--config", type=str, default="configs/config.yaml", help="Config file")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
+    parser.add_argument("--stage", type=int, default=1, help="Stage (1 for IOANet, 2 for LPIOANet)")
+    parser.add_argument("--split", type=str, default="test", help="Split to evaluate on (test/train/val)")
     
     args = parser.parse_args()
     
@@ -124,13 +176,19 @@ def main():
     
     # Load model
     print(f"[OK] Loading model from: {args.model}")
-    model, _ = load_model(args.model, args.config, device)
+    model, _ = load_model(args.model, args.config, device, stage=args.stage)
     
     # Create test dataloader
-    resolution = tuple(config["data"]["input_resolution"])
-    test_dataset = ShadowRemovalDataset(
+    if args.stage == 2:
+        resolution = tuple(config["data"]["input_resolution_stage2"])
+        dataset_cls = HighResolutionDataset
+    else:
+        resolution = tuple(config["data"]["input_resolution"])
+        dataset_cls = ShadowRemovalDataset
+    
+    test_dataset = dataset_cls(
         root_dir=config["dataset"]["root_dir"],
-        split="test",
+        split=args.split,
         input_resolution=resolution,
         augment=False
     )

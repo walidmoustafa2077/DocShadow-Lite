@@ -4,7 +4,7 @@
 # Dataset configuration
 dataset:
   # Root directory for dataset (used by both Stage 1 and Stage 2)
-  root_dir: ""
+  root_dir: "Data/Kligler"
   
   # DataLoader workers (for 5k images on Windows):
   # 0 = Slowest, lowest RAM (main process only)
