@@ -4,8 +4,8 @@ Mixed-dataset module for Stage 1 training (FSDSRD, RDD, SD7K, A-OSR).
 This module is imported by train.py (NOT run directly). It provides:
 
 - MixedShadowRemovalDataset : reads the preprocessed merged flat folder
-  (Data/Mixed_Stage1/{input,target,mask}) and applies augmentation ONLY to
-  A-OSR samples (identified by the AOSR_ filename prefix).
+  (Data/Mixed_Stage1/{input,target,mask}) and applies augmentation to ALL
+  samples (every dataset tag: FSDSRD, RDD, SD7K, A-OSR).
 - MixedBatchSampler          : per-dataset shuffle queues. Each dataset has its
   own shuffled index queue; batches are composed by popping a fixed count from
   each queue (5 FSDSRD + 4 RDD + 5 SD7K + 2 A-OSR = 16). When a queue empties
@@ -28,9 +28,9 @@ import cv2
 from src.data.dataset import _resolve_data_folder, _has_test_split
 
 # Dataset tags -> per-batch counts (must sum to batch_size).
-# A-OSR is the ONLY dataset that gets augmentation.
-AUGMENTED_TAG = "AOSR"
-DEFAULT_RATIOS = {"FSDSRD": 5, "RDD": 4, "SD7K": 5, "AOSR": 2}
+# Augmentation is applied to ALL datasets (not just A-OSR).
+# CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
+DEFAULT_RATIOS = {"FSDSRD": 5, "RDD": 4, "SD7K": 5, "AOSR": 2, "CLEAN": 1, "BLACK": 1}
 
 
 def _tag_of(name: str) -> str:
@@ -40,8 +40,8 @@ def _tag_of(name: str) -> str:
 
 class MixedShadowRemovalDataset(Dataset):
     """
-    Dataset over the merged flat folder. Augmentation is applied ONLY to
-    samples whose filename prefix is the AUGMENTED_TAG (A-OSR).
+    Dataset over the merged flat folder. Augmentation is applied to ALL
+    samples (every dataset tag) on the train split.
     """
 
     def __init__(
@@ -57,8 +57,8 @@ class MixedShadowRemovalDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.split = split
         self.input_resolution = input_resolution
-        # augment flag only matters for the train split; A-OSR-only gating is
-        # applied per-sample in __getitem__.
+        # augment flag only matters for the train split; per-sample gating is
+        # applied in __getitem__.
         self.augment = augment and (split == "train")
         self.illumination_strength = illumination_strength
         self.shadow_color_shift = shadow_color_shift
@@ -129,8 +129,8 @@ class MixedShadowRemovalDataset(Dataset):
             except Exception:
                 mask_np = None
 
-        # Augment ONLY A-OSR samples (and only on the train split).
-        if self.augment and _tag_of(name) == AUGMENTED_TAG:
+        # Augment ALL samples (and only on the train split).
+        if self.augment:
             input_np, target_np, mask_np = self._augment(input_np, target_np, mask_np)
 
         # Resize to target resolution if needed (preprocessed data usually matches).
@@ -188,9 +188,10 @@ class MixedShadowRemovalDataset(Dataset):
             if shadow_mask.ndim == 3 and shadow_mask.shape[0] == 1:
                 shadow_mask = shadow_mask[0]
             color_shift = np.random.uniform(
-                -self.shadow_color_shift, self.shadow_color_shift, size=(3, 1, 1)
+                -self.shadow_color_shift, self.shadow_color_shift, size=(1, 1, 3)
             ).astype(np.float32)
-            input_img = input_img + color_shift * shadow_mask[None, :, :]
+            # color_shift (1,1,3) * shadow_mask (H,W,1) -> (H,W,3), matches HWC input_img.
+            input_img = input_img + color_shift * shadow_mask[:, :, None]
             input_img = np.clip(input_img, 0, 1)
 
         # 5. Small rotation

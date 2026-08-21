@@ -266,10 +266,11 @@ class ShadowRemovalDataset(Dataset):
                 shadow_mask = shadow_mask[0]  # (H, W)
             # Per-channel color shift
             color_shift = np.random.uniform(
-                -self.shadow_color_shift, self.shadow_color_shift, size=(3, 1, 1)
+                -self.shadow_color_shift, self.shadow_color_shift, size=(1, 1, 3)
             ).astype(np.float32)
-            # Apply shift only in shadow regions
-            input_img = input_img + color_shift * shadow_mask[None, :, :]
+            # Apply shift only in shadow regions.
+            # color_shift (1,1,3) * shadow_mask (H,W,1) -> (H,W,3), matching HWC input_img.
+            input_img = input_img + color_shift * shadow_mask[:, :, None]
             input_img = np.clip(input_img, 0, 1)
         
         # 5. Small rotation (document perspective robustness)

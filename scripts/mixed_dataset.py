@@ -23,16 +23,17 @@ Each --source is `TAG=PATH`. The tag becomes the filename prefix (e.g. AOSR_).
 Each source path should contain {input,target,mask} subfolders (flat layout).
 """
 import argparse
+import random
 import cv2
+import numpy as np
 import yaml
 from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-# Dataset tags -> filename prefixes. A-OSR is the ONLY dataset that gets
-# augmentation at training time, so it must be identifiable by prefix.
-AUGMENTED_TAG = "AOSR"
+# Dataset tags -> filename prefixes. All datasets are augmented at training
+# time, so no single tag needs special handling here.
 
 # Subfolders expected inside each source dataset (flat layout).
 TYPE_DIRS = ["input", "target", "mask"]
@@ -162,6 +163,87 @@ def _process_prefixed(args):
         return False, f"{f.name}: {e}"
 
 
+def generate_synthetic_samples(dest_dir, target_size, quality=95, seed=42,
+                               clean_count=0, black_count=0):
+    """
+    Generate synthetic "no-shadow" samples into the merged dest folder.
+
+    Two new tags are produced from the already-merged real samples:
+
+    - CLEAN_* : pick a real target image, set input = target and mask = all
+      black (0). Teaches the model that a document with no shadow should be
+      passed through unchanged (identity).
+    - BLACK_* : input = target = mask = all black. Teaches the model that a
+      fully black region should not be brightened / no shadow invented.
+
+    Both are regularizers, so they should be a clear minority of the dataset.
+
+    Returns (clean_written, black_written).
+    """
+    dest_path = Path(dest_dir)
+    target_dir = dest_path / "target"
+    if not target_dir.exists():
+        print("[SKIP] Synthetic samples: no target folder to source from")
+        return 0, 0
+
+    # Source real targets (any tag) to build CLEAN samples from.
+    extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP"]
+    real_targets = []
+    for ext in extensions:
+        real_targets.extend(list(target_dir.glob(ext)))
+    real_targets = sorted(real_targets)
+
+    rng = random.Random(seed)
+    w, h = target_size
+
+    clean_written = 0
+    black_written = 0
+
+    # --- CLEAN: input = target, mask = black ---
+    if clean_count > 0:
+        clean_input_dir = dest_path / "input"
+        clean_target_dir = dest_path / "target"
+        clean_mask_dir = dest_path / "mask"
+        clean_input_dir.mkdir(parents=True, exist_ok=True)
+        clean_target_dir.mkdir(parents=True, exist_ok=True)
+        clean_mask_dir.mkdir(parents=True, exist_ok=True)
+
+        for i in range(clean_count):
+            if not real_targets:
+                break
+            src = rng.choice(real_targets)
+            img = cv2.imread(str(src))
+            if img is None:
+                continue
+            img_resized = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+            name = f"CLEAN_{i:04d}.png"
+            cv2.imwrite(str(clean_input_dir / name), img_resized)
+            cv2.imwrite(str(clean_target_dir / name), img_resized)
+            black_mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.imwrite(str(clean_mask_dir / name), black_mask)
+            clean_written += 1
+
+    # --- BLACK samples: input = target = mask = all black ---
+    if black_count > 0:
+        black_input_dir = dest_path / "input"
+        black_target_dir = dest_path / "target"
+        black_mask_dir = dest_path / "mask"
+        black_input_dir.mkdir(parents=True, exist_ok=True)
+        black_target_dir.mkdir(parents=True, exist_ok=True)
+        black_mask_dir.mkdir(parents=True, exist_ok=True)
+
+        black_img = np.zeros((h, w, 3), dtype=np.uint8)
+        black_mask = np.zeros((h, w), dtype=np.uint8)
+        for i in range(black_count):
+            name = f"BLACK_{i:04d}.png"
+            cv2.imwrite(str(black_input_dir / name), black_img)
+            cv2.imwrite(str(black_target_dir / name), black_img)
+            cv2.imwrite(str(black_mask_dir / name), black_mask)
+            black_written += 1
+
+    return clean_written, black_written
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Merge multiple shadow-removal datasets into one flat folder for mixed training"
@@ -179,6 +261,14 @@ def main():
     parser.add_argument("--fraction", type=float, default=1.0,
                         help="Fraction of each dataset to process (0.0 < fraction <= 1.0, "
                              "e.g. 0.5 for half, 0.25 for a quarter). Default: 1.0 (all)")
+    parser.add_argument("--clean-count", type=int, default=0,
+                        help="Number of synthetic CLEAN samples to generate "
+                             "(input=target, mask=black). Teaches identity/no-shadow.")
+    parser.add_argument("--black-count", type=int, default=0,
+                        help="Number of synthetic BLACK samples to generate "
+                             "(input=target=mask=black). Teaches black-region guard.")
+    parser.add_argument("--synthetic-seed", type=int, default=42,
+                        help="Random seed for synthetic sample selection (default: 42)")
 
     args = parser.parse_args()
 
@@ -222,8 +312,7 @@ def main():
     print(f"[OK] Destination: {args.dest}")
     print(f"[OK] Datasets:")
     for tag, path in sources.items():
-        aug_note = " (AUGMENTED at train time)" if tag == AUGMENTED_TAG else ""
-        print(f"      {tag}: {path}{aug_note}")
+        print(f"      {tag}: {path} (AUGMENTED at train time)")
     print()
 
     total_processed = 0
@@ -232,6 +321,23 @@ def main():
         processed, failed = merge_dataset(path, args.dest, tag, target_size, args.quality, args.fraction)
         total_processed += processed
         total_failed += failed
+
+    # Generate synthetic no-shadow samples (CLEAN + BLACK) as regularizers.
+    if args.clean_count > 0 or args.black_count > 0:
+        print("=" * 80)
+        print("SYNTHETIC NO-SHADOW SAMPLES")
+        print("=" * 80)
+        print(f"[OK] CLEAN (input=target, mask=black): {args.clean_count}")
+        print(f"[OK] BLACK (input=target=mask=black): {args.black_count}")
+        syn_clean, syn_black = generate_synthetic_samples(
+            args.dest, target_size, args.quality,
+            seed=args.synthetic_seed,
+            clean_count=args.clean_count,
+            black_count=args.black_count,
+        )
+        total_processed += syn_clean + syn_black
+        print(f"[OK] CLEAN written: {syn_clean}, BLACK written: {syn_black}")
+        print()
 
     print("=" * 80)
     print(f"[COMPLETE] Mixed preprocessing finished!")

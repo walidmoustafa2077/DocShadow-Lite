@@ -21,14 +21,17 @@ dataset:
   mixed:
     enabled: false
     root_dir: "Data/Mixed_Stage1"   # Merged flat folder {input,target,mask}
-    batch_size: 16                  # Must equal the sum of ratios below
+    batch_size: 18                  # Must equal the sum of ratios below
     val_split: 0.1                  # Carve 10% val from each dataset
-    # Per-batch composition (sums to 16). A-OSR is the ONLY augmented dataset.
+    # Per-batch composition (sums to 18). Augmentation applies to ALL datasets.
+    # CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
     ratios:
       FSDSRD: 5
       RDD: 4
       SD7K: 5
       AOSR: 2
+      CLEAN: 1
+      BLACK: 1
   
 # Data dimensions and preprocessing
 data:
