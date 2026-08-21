@@ -371,7 +371,7 @@ class Trainer:
         print(f"  Batch Size: {config['batch_size']}")
         print(f"  Learning Rate: {config['learning_rate']}")
         print(f"  LR Scheduler: None (paper uses constant LR)")
-        print(f"  Loss: L1×{config['losses']['l1_weight']} + LPIPS×{config['losses']['lpips_weight']} (VGG)")
+        print(f"  Loss: L1×{config['losses']['l1_weight']} + LPIPS×{config['losses']['lpips_weight']} (AlexNet)")
         print(f"  Train Batches: {len(train_loader)}")
         print(f"  Val Batches: {len(val_loader)}")
         

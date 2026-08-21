@@ -3,7 +3,7 @@ Loss Functions for Shadow Removal
 
 Implementation based on Plan.md Phase E:
 - L1 Loss: Pixel-level accuracy
-- LPIPS (VGG-16): Perceptual quality
+- LPIPS (AlexNet): Perceptual quality
 - Total Loss: 10 × L1 + 5 × LPIPS
 """
 
@@ -27,7 +27,7 @@ class ShadowRemovalLoss(nn.Module):
     
     Where:
         - L1: Mean Absolute Error (pixel-level accuracy)
-        - LPIPS: Learned Perceptual Image Patch Similarity (VGG-16 based)
+        - LPIPS: Learned Perceptual Image Patch Similarity (AlexNet based)
     """
     
     def __init__(
