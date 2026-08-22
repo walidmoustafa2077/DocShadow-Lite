@@ -102,6 +102,18 @@ training:
     losses:
       l1_weight: 10.0    # L1 pixel loss weight - Reduced to avoid dirty background matching
       lpips_weight: 5.0 # LPIPS perceptual loss weight (VGG-16) - Increased for edge sharpness
+      mse_weight: 0.0    # MSE loss weight (0 = disabled). Directly optimizes PSNR (PSNR ∝ 1/RMSE).
+                         # Recommended 2-5 if enabled. Combine with L1+LPIPS to avoid blur.
+    
+    # LR decay (optional, 0 = disabled). Breaks past the plateau for finer convergence.
+    # Paper uses constant LR, but LR decay is a well-established fine-tuning technique
+    # (Coordinate Attention uses cosine; RedWeb halves LR every 50 epochs).
+    lr_scheduler:
+      enabled: false
+      type: "step"        # "step" (halve every N epochs) or "cosine"
+      step_size: 50       # For "step": halve LR every N epochs
+      gamma: 0.5          # For "step": LR multiplier (0.5 = halve)
+      min_lr: 0.00001     # For "cosine": floor LR
       
     checkpoint_interval: 20  # Save checkpoint every N epochs
     validation_interval: 5   # Validate every N epochs

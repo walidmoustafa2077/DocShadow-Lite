@@ -347,8 +347,25 @@ class Trainer:
         
         optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
         
-        # Paper alignment: no LR scheduler (LP-IOANet paper uses constant LR with Adam)
+        # Optional LR scheduler (config-driven). Paper uses constant LR, but LR
+        # decay is a well-established fine-tuning technique to break past plateaus.
         scheduler = None
+        lr_cfg = config.get("lr_scheduler", {})
+        if lr_cfg.get("enabled", False):
+            sched_type = lr_cfg.get("type", "step")
+            if sched_type == "cosine":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=config["epochs"],
+                    eta_min=lr_cfg.get("min_lr", 1e-5),
+                )
+            else:  # step
+                scheduler = torch.optim.lr_scheduler.StepLR(
+                    optimizer,
+                    step_size=lr_cfg.get("step_size", 50),
+                    gamma=lr_cfg.get("gamma", 0.5),
+                )
+            print(f"[OK] LR Scheduler: {sched_type} (enabled)")
         
         # Load checkpoint if resuming
         start_epoch = self._load_checkpoint_with_mode(model, optimizer, scheduler)
@@ -363,6 +380,7 @@ class Trainer:
         loss_fn = ShadowRemovalLoss(
             l1_weight=config["losses"]["l1_weight"],
             lpips_weight=config["losses"]["lpips_weight"],
+            mse_weight=config["losses"].get("mse_weight", 0.0),
             device=str(self.device)
         )
         
@@ -370,8 +388,10 @@ class Trainer:
         print(f"  Epochs: {config['epochs']}")
         print(f"  Batch Size: {config['batch_size']}")
         print(f"  Learning Rate: {config['learning_rate']}")
-        print(f"  LR Scheduler: None (paper uses constant LR)")
-        print(f"  Loss: L1×{config['losses']['l1_weight']} + LPIPS×{config['losses']['lpips_weight']} (AlexNet)")
+        sched_desc = f"{lr_cfg.get('type', 'step')}" if lr_cfg.get("enabled", False) else "None (paper uses constant LR)"
+        print(f"  LR Scheduler: {sched_desc}")
+        mse_desc = f" + MSE×{config['losses'].get('mse_weight', 0.0)}" if config["losses"].get("mse_weight", 0.0) > 0 else ""
+        print(f"  Loss: L1×{config['losses']['l1_weight']} + LPIPS×{config['losses']['lpips_weight']}{mse_desc} (AlexNet)")
         print(f"  Train Batches: {len(train_loader)}")
         print(f"  Val Batches: {len(val_loader)}")
         
@@ -437,9 +457,10 @@ class Trainer:
             self.writer.add_scalar("train/lr", optimizer.param_groups[0]['lr'], epoch)
             
             # Print epoch final training metrics
+            mse_str = f", mse={train_losses['mse']:.4f}" if 'mse' in train_losses else ""
             print(
                 f"[Train] Epoch {epoch+1:3d} | "
-                f"Loss: {train_losses['total']:.4f} (l1={train_losses['l1']:.4f}, lpips={train_losses['lpips']:.4f}) | "
+                f"Loss: {train_losses['total']:.4f} (l1={train_losses['l1']:.4f}{mse_str}, lpips={train_losses['lpips']:.4f}) | "
                 f"MAE: {train_metrics['mae']:.4f} | PSNR: {train_metrics['psnr']:.2f} dB | SSIM: {train_metrics['ssim']:.3f}"
             )
             
@@ -508,14 +529,17 @@ class Trainer:
                     self.patience_counter = 0
                     
                     save_path = self.checkpoint_dir / "best_model.pth"
-                    torch.save({
+                    ckpt = {
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'epoch': epoch + 1,
                         'val_loss': val_loss,
                         'best_val_loss': self.best_val_loss,
                         'patience_counter': self.patience_counter
-                    }, save_path)
+                    }
+                    if scheduler is not None:
+                        ckpt['scheduler_state_dict'] = scheduler.state_dict()
+                    torch.save(ckpt, save_path)
                     print(f"    ► Best model saved: {save_path.name}")
                 else:
                     self.patience_counter += 1
@@ -527,14 +551,21 @@ class Trainer:
             
             if (epoch + 1) % config["checkpoint_interval"] == 0:
                 ckpt_path = self.checkpoint_dir / f"checkpoint_epoch{epoch+1}.pth"
-                torch.save({
+                ckpt = {
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'epoch': epoch + 1,
                     'val_loss': self.best_val_loss,
                     'best_val_loss': self.best_val_loss,
                     'patience_counter': self.patience_counter
-                }, ckpt_path)
+                }
+                if scheduler is not None:
+                    ckpt['scheduler_state_dict'] = scheduler.state_dict()
+                torch.save(ckpt, ckpt_path)
+            
+            # Step the LR scheduler at the end of each epoch (if enabled).
+            if scheduler is not None:
+                scheduler.step()
         
         print("\n" + "=" * 100)
         print(f"[OK] Training Complete!")

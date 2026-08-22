@@ -4,7 +4,8 @@ Loss Functions for Shadow Removal
 Implementation based on Plan.md Phase E:
 - L1 Loss: Pixel-level accuracy
 - LPIPS (AlexNet): Perceptual quality
-- Total Loss: 10 × L1 + 5 × LPIPS
+- MSE (optional): Directly optimizes PSNR (PSNR ∝ 1/RMSE)
+- Total Loss: 10 × L1 + 5 × LPIPS (+ mse_weight × MSE if enabled)
 """
 
 import torch
@@ -25,8 +26,12 @@ class ShadowRemovalLoss(nn.Module):
     Implements Equation 1 from Plan.md:
         Loss = 10 × L1 + 5 × LPIPS
     
+    Optionally adds an MSE term (mse_weight > 0) to directly optimize PSNR.
+    MSE alone causes blur, so it is combined with L1 (edges) + LPIPS (perceptual).
+    
     Where:
         - L1: Mean Absolute Error (pixel-level accuracy)
+        - MSE: Mean Squared Error (directly optimizes PSNR)
         - LPIPS: Learned Perceptual Image Patch Similarity (AlexNet based)
     """
     
@@ -34,18 +39,21 @@ class ShadowRemovalLoss(nn.Module):
         self,
         l1_weight: float = 10.0,
         lpips_weight: float = 5.0,
+        mse_weight: float = 0.0,
         device: str = "cuda"
     ):
         """
         Args:
             l1_weight: Weight for L1 loss (default: 10.0)
             lpips_weight: Weight for LPIPS perceptual loss (default: 5.0)
+            mse_weight: Weight for MSE loss (default: 0.0 = disabled)
             device: Device for LPIPS model
         """
         super().__init__()
         
         self.l1_weight = l1_weight
         self.lpips_weight = lpips_weight
+        self.mse_weight = mse_weight
         
         # Initialize LPIPS with AlexNet backbone (paper alignment)
         # The paper cites LPIPS [20]; the standard/default backbone is AlexNet.
@@ -73,6 +81,7 @@ class ShadowRemovalLoss(nn.Module):
             Dictionary with keys:
                 - 'total': Total weighted loss
                 - 'l1': L1 loss value
+                - 'mse': MSE loss value (0 if disabled)
                 - 'lpips': LPIPS loss value
         """
         # =====================================================================
@@ -80,6 +89,11 @@ class ShadowRemovalLoss(nn.Module):
         # =====================================================================
         # The paper uses plain L1 loss (Equation 1). No shadow-aware weighting.
         l1_loss = F.l1_loss(output, target)
+        
+        # =====================================================================
+        # MSE Loss Calculation (optional, directly optimizes PSNR)
+        # =====================================================================
+        mse_loss = F.mse_loss(output, target) if self.mse_weight > 0 else torch.zeros((), device=output.device)
         
         # =====================================================================
         # LPIPS Loss Calculation (Perceptual Quality)
@@ -94,11 +108,14 @@ class ShadowRemovalLoss(nn.Module):
         # =====================================================================
         # Total Objective (Equation 1 from Plan.md Phase E - Enhanced)
         # =====================================================================
-        total_loss = self.l1_weight * l1_loss + self.lpips_weight * lpips_loss
+        total_loss = (self.l1_weight * l1_loss
+                      + self.mse_weight * mse_loss
+                      + self.lpips_weight * lpips_loss)
         
         return {
             'total': total_loss,
             'l1': l1_loss,
+            'mse': mse_loss,
             'lpips': lpips_loss
         }
 
