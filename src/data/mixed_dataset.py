@@ -29,8 +29,10 @@ from src.data.dataset import _resolve_data_folder, _has_test_split
 
 # Dataset tags -> per-batch counts (must sum to batch_size).
 # Augmentation is applied to ALL datasets (not just A-OSR).
+# AOSR is 50% of the batch (9/18) since it contains real shadow datasets
+# (OSR + Kligler + Jung) that need more representation.
 # CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
-DEFAULT_RATIOS = {"FSDSRD": 5, "RDD": 4, "SD7K": 5, "AOSR": 2, "CLEAN": 1, "BLACK": 1}
+DEFAULT_RATIOS = {"AOSR": 9, "FSDSRD": 3, "RDD": 2, "SD7K": 2, "CLEAN": 1, "BLACK": 1}
 
 
 def _tag_of(name: str) -> str:

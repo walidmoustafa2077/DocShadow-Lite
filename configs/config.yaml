@@ -24,12 +24,14 @@ dataset:
     batch_size: 18                  # Must equal the sum of ratios below
     val_split: 0.1                  # Carve 10% val from each dataset
     # Per-batch composition (sums to 18). Augmentation applies to ALL datasets.
+    # AOSR is now 50% of the batch (9/18) since it contains real shadow datasets
+    # (OSR + Kligler + Jung) that need more representation.
     # CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
     ratios:
-      FSDSRD: 5
-      RDD: 4
-      SD7K: 5
-      AOSR: 2
+      AOSR: 9
+      FSDSRD: 3
+      RDD: 2
+      SD7K: 2
       CLEAN: 1
       BLACK: 1
   
@@ -66,7 +68,7 @@ model:
     pretrained: true         # Use pretrained weights for faster convergence
 
     # Checkpoint path for Stage 1 Model
-    checkpoint: "outputs/checkpoints/stage1/best_model.pth"  # Stage 1 checkpoint for Stage 2 training
+    checkpoint: "outputs/checkpoints_v2/stage1/best_model.pth"  # Stage 1 checkpoint for Stage 2 training
   
   # Stage 2: Laplacian Pyramid Refinement Network (LPTN-Lite)
   # Plan.md Phase 5: LPTN-Lite Refinement Architecture
