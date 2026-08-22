@@ -21,17 +21,20 @@ dataset:
   mixed:
     enabled: false
     root_dir: "Data/Mixed_Stage1"   # Merged flat folder {input,target,mask}
-    batch_size: 18                  # Must equal the sum of ratios below
+    batch_size: 32                  # Must equal the sum of ratios below
     val_split: 0.1                  # Carve 10% val from each dataset
-    # Per-batch composition (sums to 18). Augmentation applies to ALL datasets.
-    # AOSR is now 50% of the batch (9/18) since it contains real shadow datasets
-    # (OSR + Kligler + Jung) that need more representation.
+    # Per-batch composition (sums to 32). Augmentation applies to ALL datasets.
+    # AOSR is the largest (10/32) since it contains real shadow datasets
+    # (OSR + Kligler + Jung) that need the most representation.
+    # SynDoc_Wild / SynDoc_Wild_3D are large synthetic datasets (6120/5590).
     # CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
     ratios:
-      AOSR: 9
-      FSDSRD: 3
-      RDD: 2
-      SD7K: 2
+      AOSR: 10
+      SynDoc_Wild: 4
+      SynDoc_Wild_3D: 4
+      FSDSRD: 4
+      RDD: 4
+      SD7K: 4
       CLEAN: 1
       BLACK: 1
   

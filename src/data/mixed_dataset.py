@@ -29,14 +29,36 @@ from src.data.dataset import _resolve_data_folder, _has_test_split
 
 # Dataset tags -> per-batch counts (must sum to batch_size).
 # Augmentation is applied to ALL datasets (not just A-OSR).
-# AOSR is 50% of the batch (9/18) since it contains real shadow datasets
-# (OSR + Kligler + Jung) that need more representation.
+# AOSR is the largest (10/32) since it contains real shadow datasets
+# (OSR + Kligler + Jung) that need the most representation.
+# SynDoc_Wild / SynDoc_Wild_3D are large synthetic datasets (6120/5590).
 # CLEAN = input=target, mask=black (identity/no-shadow). BLACK = all black.
-DEFAULT_RATIOS = {"AOSR": 9, "FSDSRD": 3, "RDD": 2, "SD7K": 2, "CLEAN": 1, "BLACK": 1}
+DEFAULT_RATIOS = {
+    "AOSR": 10,
+    "SynDoc_Wild": 4,
+    "SynDoc_Wild_3D": 4,
+    "FSDSRD": 4,
+    "RDD": 4,
+    "SD7K": 4,
+    "CLEAN": 1,
+    "BLACK": 1,
+}
 
 
 def _tag_of(name: str) -> str:
-    """Return the dataset tag from a prefixed filename (e.g. 'AOSR_0001.png' -> 'AOSR')."""
+    """
+    Return the dataset tag from a prefixed filename.
+
+    Handles multi-word tags (e.g. 'SynDoc_Wild_0001.png' -> 'SynDoc_Wild').
+    Uses longest-prefix matching against the known tags so that tags that are
+    prefixes of each other (e.g. 'SynDoc_Wild' vs 'SynDoc_Wild_3D') resolve
+    correctly.
+    """
+    known = sorted(DEFAULT_RATIOS.keys(), key=len, reverse=True)
+    for tag in known:
+        if name.startswith(tag + "_"):
+            return tag
+    # Fallback: first underscore-delimited token (single-word tags).
     return name.split("_", 1)[0]
 
 

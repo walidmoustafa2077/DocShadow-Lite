@@ -4,8 +4,7 @@ Mixed-dataset preprocessing script (Stage 1).
 Merges multiple shadow-removal datasets into a single flat folder
 (Data/Mixed_Stage1/{input,target,mask}) at the Stage 1 resolution (192×256),
 prefixing every filename with its dataset tag so the training-time dataset
-class can identify which samples belong to A-OSR (the only dataset that gets
-augmentation).
+class can identify which samples belong to each dataset.
 
 Run ONCE, offline, before training. This keeps resize/merge work out of the
 training loop so there is no CPU load during training.
@@ -16,10 +15,14 @@ Usage:
         --source RDD=path/to/rdd \
         --source SD7K=path/to/sd7k \
         --source AOSR=path/to/osr \
+        --source SynDoc_Wild=path/to/syndoc_wild \
+        --source SynDoc_Wild_3D=path/to/syndoc_wild_3d \
         --dest Data/Mixed_Stage1 \
         --size 192 256
 
 Each --source is `TAG=PATH`. The tag becomes the filename prefix (e.g. AOSR_).
+Multi-word tags (e.g. SynDoc_Wild_3D) are supported — the training-time
+dataset class uses longest-prefix matching to resolve them.
 Each source path should contain {input,target,mask} subfolders (flat layout).
 """
 import argparse
