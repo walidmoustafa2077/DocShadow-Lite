@@ -5,7 +5,7 @@
 
 data:
   root: "/kaggle/input/nexadoc-50k"
-  num_workers: 4
+  num_workers: 2
   prefetch_factor: 2
 
 stage1:
