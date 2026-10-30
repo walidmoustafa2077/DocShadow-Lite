@@ -1,0 +1,11 @@
+# Training dependencies for the NexaDoc pipeline.
+# Kaggle images already ship CUDA-enabled torch/torchvision; install only what is missing.
+torch>=2.3
+torchvision>=0.18
+numpy>=1.24
+opencv-python>=4.8
+PyYAML>=6.0
+tqdm>=4.66
+lpips>=0.1.4
+tensorboard>=2.15
+pytest>=7.4
